@@ -1,0 +1,9 @@
+[submodule "external/FiGS"]
+	path = external/FiGS
+	url = https://github.com/StanfordMSL/FiGS.git
+[submodule "external/Splat-MOVER"]
+	path = external/Splat-MOVER
+	url = https://github.com/StanfordMSL/Splat-MOVER.git
+[submodule "external/splatnav"]
+	path = external/splatnav
+	url = https://github.com/chengine/splatnav.git
