@@ -8,3 +8,7 @@ runs/
 *.ipynb_checkpoints/
 .vscode/
 .idea/
+
+# Datasets are too large for git; users symlink or copy their own data dir.
+# See README for layout expectations.
+/data
