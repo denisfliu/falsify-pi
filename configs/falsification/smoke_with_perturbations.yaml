@@ -1,0 +1,11 @@
+# Smoke test with action-side perturbations active.
+scene: configs/scenes/left_gate.yaml
+frame: configs/frames/carl_dual.yaml
+policy: configs/policies/mock_straight_line.yaml
+perturbations: configs/perturbations/light_action.yaml
+
+hz: 10
+policy_hz: 1
+horizon_s: 5.0
+
+output_dir: runs

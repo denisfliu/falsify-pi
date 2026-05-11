@@ -1,0 +1,9 @@
+github sub repos:
+https://github.com/StanfordMSL/FiGS.git
+https://github.com/StanfordMSL/Splat-MOVER.git
+https://github.com/chengine/splatnav.git
+
+Goal:
+Architect and then implement a clean, modular system to combine the three components above into a falsification framework/gsplat training dojo. Initial requirements: easy to configure falsification parameters, support multimodal policies (vlas) that take positions, images in the gsplat, and output the trajectories provided by that external policy in sim (FiGS). If failure is detected, we want to find the latest point of safety and replan using splatnav. Splat-MOVER is used to perturb objects in the gsplat, which we will provide later when it is created. For now, refer to ~/code/SousVide for the old form of this project, which has example gsplat assets and perturbation parameters. 
+
+The reason why we are restarting from scratch is because the coordinate transforms and code was too spaghetti. Therefore, we are emphasizing good code quality, and ease of use for smoke testing. With this in mind, create a plan to execute this idea, ensuring that, in our code, the coordinate frame is always explicit (that is, any time we have a position, we also always can extract the coordinate frame we think we're in. That is, if we have some [x, y, z], maybe we wrap it in a Coordinate class or something that has a Coordinate.frame = 'mocap', or something like this. And then we fill in the appropriate transforms from frame to frame. We also want to be able to debug/visualize the frames as point clouds. So let's create a visualization folder or something such that we can visualize trajectories in point clouds in arbitrary coordinate frames. Finally, we also want to make sure that you are always kept up to date on how the codebase interlinks with each other, meaning it is of utmost importance that we create the necessary claude md files and update them as we make changes.

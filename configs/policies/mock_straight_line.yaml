@@ -1,0 +1,4 @@
+type: mock_straight_line
+speed: 0.5
+horizon_s: 5.0
+n_waypoints: 50

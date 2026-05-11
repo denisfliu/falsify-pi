@@ -1,0 +1,6 @@
+type: mock_noisy
+speed: 0.5
+horizon_s: 5.0
+n_waypoints: 50
+position_noise_std: 0.5
+seed: 0

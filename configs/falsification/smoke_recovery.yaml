@@ -1,0 +1,19 @@
+# Smoke-test variant that uses the noisy mock + tight safety bounds so the
+# failure detector trips and we can verify the recovery hook (Phase 5+).
+
+scene: configs/scenes/left_gate.yaml
+frame: configs/frames/carl_dual.yaml
+policy: configs/policies/mock_noisy.yaml
+
+hz: 10
+policy_hz: 1
+horizon_s: 8.0
+
+# Tight bounds in NED — the noisy mock will breach them quickly.
+safety:
+  bounds_lower: [-0.3, -0.3, 0.5]
+  bounds_upper: [ 0.6,  1.2, 2.0]
+  max_speed: 5.0
+  max_tilt_rad: 1.2
+
+output_dir: runs

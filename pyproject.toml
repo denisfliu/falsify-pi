@@ -1,0 +1,113 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falsify"
+version = "0.1.0"
+description = "Falsification and gsplat training dojo for multimodal drone policies (VLAs) over Gaussian Splatting environments"
+requires-python = ">=3.10"
+dependencies = [
+    # ---- core scientific stack ----
+    "numpy==1.26.4",
+    "scipy",
+    "sympy",
+    "casadi",
+    "cython",
+    "pyyaml",
+
+    # ---- torch (resolved via pytorch-cu121 index below) ----
+    "torch==2.1.2",
+    "torchvision==0.16.2",
+
+    # ---- computer vision / 3D ----
+    "opencv-python-headless==4.10.0.84",
+    "open3d",
+    "trimesh",
+    "kornia>=0.6.11",
+    "pycolmap>=0.6.0",
+
+    # ---- nerfstudio ecosystem ----
+    "nerfstudio==1.1.0",
+    "tinycudann",
+    "gsplat==0.1.13",
+    "viser",
+    "lightglue",
+
+    # ---- planning / optimization ----
+    "qpsolvers",
+    "clarabel",
+    "cvxpy",
+    "cvxopt",
+    "polytope",
+    "dijkstra3d",
+    "unfoldNd",
+
+    # ---- data / IO ----
+    "imageio[ffmpeg]",
+    "Pillow",
+    "pyarrow",
+
+    # ---- viz / progress ----
+    "matplotlib",
+    "plotly",
+    "tqdm",
+
+    # ---- build tools ----
+    "ninja",
+    "setuptools<70",
+    "wheel",
+    "nvidia-cuda-nvcc-cu12==12.1.105",
+    "nvidia-cuda-runtime-cu12==12.1.105",
+    "websockets>=11,<12",
+
+    # ---- VLA inference ----
+    "openpi-client",
+
+    # ---- sagesplat deps ----
+    "clip",
+    "timm",
+    "ftfy",
+    "regex",
+    "einops",
+    "torchtyping",
+
+    # ---- local packages (vendored as submodules) ----
+    "figs",
+    "acados-template",
+    "hloc",
+    "splatnav",
+    "sagesplat",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+no-build-isolation-package = ["tinycudann"]
+
+[tool.uv.sources]
+torch       = [{ index = "pytorch-cu121" }]
+torchvision = [{ index = "pytorch-cu121" }]
+
+tinycudann = { git = "https://github.com/NVlabs/tiny-cuda-nn", subdirectory = "bindings/torch" }
+lightglue  = { git = "https://github.com/cvg/LightGlue" }
+clip       = { git = "https://github.com/openai/CLIP.git" }
+
+# Editable installs from the external/ submodules (symlinked to SousVide's for v0).
+figs            = { path = "./external/FiGS",                                    editable = true }
+acados-template = { path = "./external/FiGS/acados/interfaces/acados_template", editable = true }
+hloc            = { path = "./external/FiGS/Hierarchical-Localization",         editable = true }
+splatnav        = { path = "./external/splatnav",                                editable = true }
+sagesplat       = { path = "./external/Splat-MOVER",                             editable = true }
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url  = "https://download.pytorch.org/whl/cu121"
+explicit = true

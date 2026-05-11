@@ -1,0 +1,23 @@
+# Carl drone frame — dual-camera variant for the falsify dual-camera VLA setup.
+# Cameras are addressed by name everywhere (``forward``, ``downward``); adding a
+# third camera is purely a YAML edit here.
+
+mass: 1.144
+massless_inertia: [0.019416, 0.019416, 0.036816]
+arm_front: [0.075, 0.100]
+arm_back:  [0.075, 0.100]
+motor_thrust_coeff: 6.90
+motor_torque_coeff: 0.69
+number_of_rotors: 4
+
+cameras:
+  forward:
+    frame: cam_forward          # must be declared in the scene YAML's frames list
+    model: pinhole
+    intrinsics: { width: 640, height: 360, fx: 462.956, fy: 463.002, cx: 323.076, cy: 181.184 }
+
+  downward:
+    frame: cam_downward
+    model: pinhole
+    # PLACEHOLDER intrinsics — replace with real calibration when available.
+    intrinsics: { width: 320, height: 320, fx: 200.0, fy: 200.0, cx: 160.0, cy: 160.0 }

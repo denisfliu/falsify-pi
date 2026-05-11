@@ -1,0 +1,13 @@
+# Top-level smoke-test config — minimal end-to-end run.
+
+scene: configs/scenes/left_gate.yaml
+frame: configs/frames/carl_dual.yaml
+policy: configs/policies/mock_straight_line.yaml
+
+# Simulator settings
+hz: 10            # control / rollout rate
+policy_hz: 1      # re-query the policy every 1s of sim time
+horizon_s: 10.0   # episode time budget
+
+# Output
+output_dir: runs   # episode artifacts land in runs/<timestamp>/

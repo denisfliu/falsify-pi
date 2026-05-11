@@ -1,0 +1,7 @@
+# Example perturbation suite — light action-side noise + bias.
+seed: 0
+action:
+  - { type: PositionNoise, std: 0.02 }
+  - { type: PositionBias, bias_xyz: [0.0, 0.05, 0.0] }
+observation: []
+environment: []
