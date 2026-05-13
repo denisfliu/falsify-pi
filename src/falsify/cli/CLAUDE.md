@@ -8,6 +8,12 @@
   every configured frame. Runs a numerical round-trip check before writing.
   The intended sanity tool when adding/swapping a scene. Each emitted PLY
   records the frame name in its header.
+- `visualize_waypoints.py` — render a Course YAML (waypoints) against a
+  scene; writes per-frame PLYs (markers + planned spline + scene
+  objects). Use during waypoint authoring (see
+  `.claude/skills/falsify-author-waypoints`).
+- `plan_trajectory.py` — Course YAML → Trajectory NPZ via the
+  spline planner (default; `--planner mpc/splatnav` stubs for future).
 - `export_training_data.py` — render a `Trajectory` NPZ (or a recorded
   VLA run, or a directory of NPZs) to one LeRobot-style parquet per
   episode. Reuses the same `GSplatRenderer` + `FrameGraph` the rollout

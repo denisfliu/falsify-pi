@@ -3,6 +3,7 @@
 | Subpackage | Purpose | Phase | Status |
 |------------|---------|-------|--------|
 | `training/` | `Trajectory` NPZ → LeRobot-style parquet via `TrainingDataExporter`; `EmbodimentSpec` decouples state/action layout + camera mapping | 7 | done |
+| `planning/` | Course YAML → Trajectory NPZ. `plan_spline` shipped; `plan_mpc` / `plan_splatnav` stubbed | 7 | spline done; MPC stub |
 | `geometry/` | Frame-tagged types (`Point`, `Pose`, `Trajectory`, `PointCloud`) + `FrameGraph` + YAML-driven transform registry | 1 | done |
 | `sim/`      | FiGS simulator wrapper + GSplat renderer + `DroneState` + runtime body↔world hinge | 2 | done (v0; FiGS-MPC integrator deferred) |
 | `sensors/`  | Pluggable observation pipeline (`Sensor`, `SensorRig`, `StateSensor`, `PromptSensor`, `CameraSensor`, `build_sensor_rig` factory) | 2 / 3 | done |

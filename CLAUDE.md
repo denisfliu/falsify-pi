@@ -50,8 +50,10 @@ src/falsify/
 ├── orchestrator/  run_episode + FalsificationEpisode
 ├── visualization/ per-frame ply dumps + html replay
 ├── training/      Trajectory NPZ → LeRobot-style parquet (image + state + action)
+├── planning/      Course YAML → Trajectory NPZ via cubic spline (MPC stub)
 ├── io/            YAML config loaders + build_frame_graph
-└── cli/           smoke_test, visualize_frames, run_vla_episode, export_training_data
+└── cli/           smoke_test, visualize_frames, run_vla_episode, export_training_data,
+                   visualize_waypoints, plan_trajectory
 ```
 
 **Sensor decoupling.** Policies declare `required_modalities`; the orchestrator

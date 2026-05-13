@@ -34,10 +34,12 @@ in `.claude/skills/`. The skills speak a single canonical type
 
 | You want to … | Skill | Status |
 |---|---|---|
+| **Author** a waypoint course and visualize it in the scene | `falsify-author-waypoints` | done |
+| Plan a Trajectory NPZ from a waypoint course (cubic spline) | `falsify-trajectory-from-waypoints` | done |
 | Run the VLA against a scene, save a trajectory | `falsify-trajectory-from-vla` | done |
 | Re-derive the trajectory of a previous VLA run (no re-inference) | `falsify-trajectory-from-replay` | done |
-| Author a straight line / helix / scripted trajectory | `falsify-trajectory-from-mock` | done |
-| Plan a feasible trajectory via FiGS-MPC | `falsify-trajectory-from-mpc` | **stub** |
+| Author a straight line / helix / scripted trajectory (one-off Python) | `falsify-trajectory-from-mock` | done |
+| Plan a feasible trajectory via FiGS-MPC (same Course YAML; just the backend is pending) | `falsify-trajectory-from-mpc` | **stub** |
 | Plan a collision-free trajectory via SplatNav | `falsify-trajectory-from-splatnav` | **stub** |
 | Inject perturbations / failures on an existing trajectory | `falsify-falsify-trajectory` | **stub** |
 | Turn a trajectory + scene into one training parquet | `falsify-export-parquet` | done |
@@ -58,7 +60,21 @@ falsify-trajectory-from-vla        # rolls out, writes runs/vla_<stamp>/
 falsify-export-parquet             # renders + emits the parquet
 ```
 
-### B. "Bulk-generate training data across both gate scenes"
+### B. "Author waypoints in a scene, get training data"
+
+```
+falsify-author-waypoints              # YAML + iterate against scene PLYs
+            │
+            ▼  configs/courses/<course>.yaml
+falsify-trajectory-from-waypoints     # spline → Trajectory NPZ (millisec)
+            │
+            ▼  runs/courses/<course>/trajectory.npz
+falsify-export-parquet                # render + emit one episode parquet
+```
+
+Only the first step needs human judgment; the other two are one CLI each.
+
+### C. "Bulk-generate training data across both gate scenes"
 
 ```
 many invocations of any
