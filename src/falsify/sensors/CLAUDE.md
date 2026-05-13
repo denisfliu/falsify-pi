@@ -1,9 +1,8 @@
 # `falsify.sensors/` — pluggable observation pipeline
 
-**Status:** Phase 2/3 scaffold in place (`Sensor` ABC, `SensorRig`,
-`StateSensor`, `PromptSensor`, `CameraSensor`). The actual gsplat-backed
-renderer that `CameraSensor` calls is wired in Phase 2 alongside the
-simulator wrapper.
+**Status:** done. `Sensor` ABC + `SensorRig` + `StateSensor` + `PromptSensor`
++ `CameraSensor` + `build_sensor_rig` factory all in place. The factory
+wires sensors to a policy's `required_modalities` automatically.
 
 ## Contract
 
@@ -49,5 +48,5 @@ sensor class; document the schema for each new namespace here.
 ## Adding a sensor
 
 1. Subclass `Sensor`. Declare `keys_provided`. Implement `sense()`.
-2. Register a factory in `factory.py` (Phase 3) or instantiate directly in the orchestrator.
+2. If the sensor maps to a modality namespace the policy will request, add a branch to `build_sensor_rig` in `factory.py` that constructs it from the relevant config slice.
 3. Update the namespace table above.

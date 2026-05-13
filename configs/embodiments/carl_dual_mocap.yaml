@@ -1,0 +1,53 @@
+# Carl drone, dual-camera, MOCAP-frame state — matches the LeRobot dataset
+# DroneVLA2.0 collects from real flights. See
+# ~/Downloads/episode_000008.parquet for the exact target schema; this
+# embodiment emits an identical column set so falsify-generated parquets
+# slot straight into the existing training pipeline.
+
+name: carl_dual_mocap
+fps: 10
+image_size: 256
+robot_type: panda
+notes: >-
+  State is MOCAP (Z-up). Yaw sign follows the VLA training convention
+  (yaw_mocap = -yaw_ned); the exporter handles that flip. Channel order
+  is BGR because the on-drone collector (data_collection_lerobot.py) used
+  cv2 which is BGR — keeping the format identical avoids surprises in the
+  trained policy's input distribution.
+
+cameras:
+  - column: image            # forward — same key the LeRobot dataset uses
+    source: render
+    camera_name: forward
+    channel_order: BGR
+    image_size: 256
+  - column: wrist_image      # downward
+    source: render
+    camera_name: downward
+    channel_order: BGR
+    image_size: 256
+  - column: "3pov_1"         # third person — falsify has no synthetic 3pov
+    source: zeros
+    channel_order: BGR
+    image_size: 256
+
+state:
+  - { name: x_mocap }
+  - { name: y_mocap }
+  - { name: z_mocap }
+  - { name: yaw_mocap }
+  - { name: gripper }
+  - { name: zero }
+  - { name: zero }
+
+actions:
+  - { name: d_x_mocap }
+  - { name: d_y_mocap }
+  - { name: d_z_mocap }
+  - { name: d_yaw_mocap }
+  - { name: d_gripper }
+  - { name: zero }
+  - { name: zero }
+
+yaw_wrap: pi          # delta_yaw wrapped to [-π, π] (collector convention)
+first_action: zeros   # action[0] is all-zero, matching the reference parquet

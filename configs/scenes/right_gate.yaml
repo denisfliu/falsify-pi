@@ -1,0 +1,56 @@
+# Right-gate scene (new sagesplat export under data/gate_scenes_export/right_scene).
+#
+# Frame contract: identical to left_gate.yaml. `mocap` here is the JOINT mocap
+# (= left scene's mocap). The right scene's nerfstudio frame is reached via
+# the pre-composed joint_mocap_to_nerf_4x4 matrix for `right_gate_new`, which
+# already folds in the ICP correction that aligns right's local mocap onto
+# joint mocap. So callers in MOCAP need no additional handling.
+
+scene_key: right_gate
+# Paths relative to this scene YAML's directory.
+gsplat_path: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353
+gsplat_config_yml: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353/config.yml
+gsplat_data_cwd: ../../data/gate_scenes_export/right_scene
+
+# Mission specification — all in MOCAP (joint mocap).
+# Right-gate AABB: x∈[0.09, 1.00], y∈[-1.40, -0.90], z∈[0.07, 1.95].
+start_position_mocap: [-0.50, -1.15, 1.50]
+goal_position_mocap:  [ 1.50, -1.15, 1.50]
+gate_position_mocap:  [ 0.54, -1.15, 1.50]
+
+frames:
+  - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag)." }
+  - { name: ned,   notes: "FiGS dynamics frame; related to mocap by inverting y and z (perm5)." }
+  - { name: ns,    notes: "Nerfstudio-internal for the RIGHT splat (ICP + dataparser pre-composed)." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing camera optical frame." }
+  - { name: cam_downward, notes: "Downward-facing camera optical frame." }
+
+transforms:
+  # SousVide "perm5": R_mocap_from_ned = diag(1, -1, -1). Matches FiGS' built-in
+  # Tw2g and the VLA's training frame.
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
+
+  # MOCAP → NS for the right scene. The 4×4 here is the composition
+  # ``M_right_dataparser @ T_icp_inv``, so it consumes joint-mocap points
+  # directly.
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, right_gate_new, joint_mocap_to_nerf_4x4] }
+
+  - { src: cam_body, dst: cam_forward, type: se3_inline,
+      R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
+      t: [0.03, -0.01, 0.10] }
+
+  # Downward camera: body +x→cam +y (image up), body +y→cam +x, body +z→cam -z.
+  - { src: cam_body, dst: cam_downward, type: se3_inline,
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+# Pre-extracted object point clouds in JOINT mocap (the right-scene PLYs in
+# objects_final/ are already ICP-aligned, so `frame: mocap` is correct).
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/right_gate.ply,  frame: mocap, color: [0.32, 0.55, 0.78] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/right_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }

@@ -49,8 +49,9 @@ src/falsify/
 ├── perturbations/ three surfaces (action / observation / environment) + JSON manifest
 ├── orchestrator/  run_episode + FalsificationEpisode
 ├── visualization/ per-frame ply dumps + html replay
+├── training/      Trajectory NPZ → LeRobot-style parquet (image + state + action)
 ├── io/            YAML config loaders + build_frame_graph
-└── cli/           smoke_test (with --stub-recovery for env-less runs)
+└── cli/           smoke_test, visualize_frames, run_vla_episode, export_training_data
 ```
 
 **Sensor decoupling.** Policies declare `required_modalities`; the orchestrator
@@ -58,6 +59,31 @@ builds a `SensorRig` from a registry (state, prompt, cameras, future
 lidar/IMU…). A `CameraSensor` is one sensor type, not a global requirement.
 Mock policies declare no modalities and run with just `StateSensor` — no
 gsplat renders triggered.
+
+## Skills index
+
+`.claude/skills/README.md` is the authoritative index of composable
+workflows in this repo (trajectory generation, training-data export,
+orchestration, debugging). **Check it before writing a new script** —
+almost every common task is already exposed as a skill that chains
+with the rest.
+
+## Producing training data
+
+`falsify.training/` converts any `Trajectory` (NED positions + quaternions
++ times) into a LeRobot-style parquet (HuggingFace Image features, embedded
+PNG bytes) that DroneVLA2.0's training pipeline ingests directly. The
+contract is three swappable layers:
+
+- **Trajectory** producers — live VLA rollout, replay from a `vla_io/`
+  run dir, mock straight-line / helix, future FiGS-MPC and SplatNav.
+- **Scene** — same scene YAMLs the rest of falsify uses.
+- **Embodiment** (`configs/embodiments/*.yaml`) — declarative
+  state/action layout + camera column mapping + channel order.
+
+See `src/falsify/training/CLAUDE.md` for the contract, the parquet schema,
+and how to add a new embodiment or trajectory producer. The skills under
+`.claude/skills/falsify-*` chain the steps for higher-level workflows.
 
 Status: **v0 feature-complete.** All ten subpackages exercise end-to-end
 through the smoke CLI (mock policy → sensor rig → policy → perturbations →
@@ -69,10 +95,17 @@ Per-package `CLAUDE.md` files document the contracts of each module.
 ## External submodules
 
 `external/` holds the three Stanford-MSL repos (FiGS, splatnav, Splat-MOVER)
-as proper git submodules pinned at the SousVide-validated SHAs. `data/`
-is a symlink to SousVide's data for v0 (large binaries, not tracked in git);
-when a new gsplat asset lands, `data/` will be repointed and a new scene
-YAML will declare its frames and transforms.
+as proper git submodules pinned at the SousVide-validated SHAs.
+
+`data/` is a symlink to the active gsplat asset bundle (not tracked in git).
+The v0 scenes live in `data/gate_scenes_export/` — two sagesplat exports
+(`left_scene/`, `right_scene/`) sharing a JOINT mocap frame (`left_scene`'s
+mocap by construction; `right_scene` aligned to it via ICP). Per-scene
+nerfstudio transforms come from
+``data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json``, loaded by
+the ``sim3_matrix_file`` transform loader (4×4 in JSON → Sim3). Scene YAMLs
+in ``configs/scenes/`` declare the same canonical frame names (``mocap``,
+``ned``, ``ns``, ``cam_*``) so all higher-level code is scene-agnostic.
 
 ## Setup
 

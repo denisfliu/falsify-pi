@@ -1,52 +1,83 @@
-# Left-gate scene: uses SousVide's existing alignment and gsplat assets for v0
-# smoke testing. When a new gsplat asset arrives, copy this file and update
-# the paths + transforms; you can also add or rename frames freely — the
-# orchestrator/sim/policy never hardcode frame names.
+# Left-gate scene (new sagesplat export under data/gate_scenes_export/left_scene).
+#
+# Frame contract (see src/falsify/geometry/CLAUDE.md for the project-wide rules):
+#   * policy positions    → mocap
+#   * MPC / SplatNav      → ned   (FiGS dynamics convention)
+#   * gsplat rendering    → ns    (nerfstudio-internal, scaled)
+#
+# Mocap here is the JOINT mocap of the gate_scenes_export bundle, which by
+# construction equals the left scene's own mocap (the ICP correction is the
+# identity for left). The same `mocap` frame name therefore refers to the
+# same physical frame across the two gate scenes — making it safe to author
+# start/goal positions once and reuse them between left and right.
 
 scene_key: left_gate
-gsplat_path: data/colmap/left_gate/sagesplat/2025-10-06_215922
-gsplat_config_yml: data/colmap/left_gate/sagesplat/2025-10-06_215922/config.yml
+# Paths are resolved relative to this scene YAML's directory (configs/scenes/),
+# same convention as the transforms' `path:` fields below.
+gsplat_path: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901
+gsplat_config_yml: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901/config.yml
+# Nerfstudio resolves config.yml's `data: mocap_processed` relative to cwd;
+# launch the gsplat with this directory as cwd (per the export bundle's README).
+gsplat_data_cwd: ../../data/gate_scenes_export/left_scene
 
-# Mission specification — all in MOCAP (Z-up world ground truth).
-start_position_mocap: [0.104, -0.022, 1.364]
-goal_position_mocap:  [1.421, -0.332, 1.000]
-gate_position_mocap:  [0.805,  0.797, 1.500]
+# Mission specification — all in MOCAP (joint mocap, z-up, origin at ArUco tag).
+# Left-gate AABB in joint mocap: x∈[0.51, 1.21], y∈[0.27, 1.12], z∈[0.08, 1.97].
+# We approach from -x at the gate's mean y and a comfortable height.
+start_position_mocap: [-0.50, 0.70, 1.50]
+goal_position_mocap:  [ 1.50, 0.70, 1.50]
+gate_position_mocap:  [ 0.86, 0.69, 1.50]
 
-# Frames active in this scene. The first four are the canonical defaults;
-# the camera frames are declared here because their body-relative SE3s are
-# scene/drone-specific.
 frames:
-  - { name: mocap, notes: "Motion-capture Z-up world (ground truth)" }
-  - { name: ned,   notes: "FiGS dynamics (North-East-Down)" }
-  - { name: colmap, notes: "Raw SfM frame" }
-  - { name: ns,    notes: "Nerfstudio-internal (dataparser-transformed, scaled)" }
-  - { name: cam_body, notes: "Drone body frame (IMU origin)" }
-  - { name: cam_forward, notes: "Forward-facing camera optical frame (OpenCV: x right, y down, z forward)" }
-  - { name: cam_downward, notes: "Downward-facing camera optical frame (OpenCV)" }
+  - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag, +x along tag printed +y)." }
+  - { name: ned,   notes: "FiGS dynamics frame; related to mocap by inverting y and z (perm5 = diag(1,-1,-1))." }
+  - { name: ns,    notes: "Nerfstudio-internal (dataparser-transformed, scaled) — what the gsplat renderer expects." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing camera optical frame (OpenCV: x right, y down, z forward)." }
+  - { name: cam_downward, notes: "Downward-facing camera optical frame (OpenCV)." }
 
-# Transforms.  Each ``type`` is a registered loader in
-# ``falsify.geometry.loaders``.  Inverse edges are derived automatically by
-# the FrameGraph.
 transforms:
-  # FiGS NED ↔ MOCAP Z-up
-  - { src: ned, dst: mocap, type: permutation, preset: "perm5" }
+  # MOCAP ↔ NED. SousVide "perm5" convention: R_mocap_from_ned = diag(1, -1, -1).
+  # This matches FiGS' built-in Tw2g (render/gsplat.py:29) and the frame the VLA
+  # was trained in, so the renderer and the OpenPI server agree without glue.
+  # Geometrically: mocap is right-handed Z-up; NED is right-handed Z-down with
+  # the same x-axis and a flipped y-axis (the y/z flip together preserve
+  # right-handedness).
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
 
-  # MOCAP ↔ COLMAP via the SousVide-style Sim3 file.
-  - { src: colmap, dst: mocap, type: sim3_file, path: ../../data/alignment/left_gate/colmap_to_mocap_sim3.json }
-
-  # COLMAP → NS via Nerfstudio's dataparser_transforms.json.
-  - { src: colmap, dst: ns, type: dataparser, path: ../../data/colmap/left_gate/sagesplat/2025-10-06_215922/dataparser_transforms.json }
+  # MOCAP → NS via the pre-composed joint_mocap_to_nerf_4x4 in the export bundle.
+  # For the left scene this is just the dataparser; the ICP step is identity.
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, left_gate_new, joint_mocap_to_nerf_4x4] }
 
   # Body → forward camera. Numbers below come from SousVide carl.json's
   # ``camera_to_body_transform`` interpreted as ``T_body_from_cam``; we
   # register the inverse ``T_cam_from_body`` here.
   - { src: cam_body, dst: cam_forward, type: se3_inline,
       R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
-      t: [0.03, -0.01, 0.10],
-      invert: false }
+      t: [0.03, -0.01, 0.10] }
 
-  # Body → downward camera. PLACEHOLDER: nominal pointing-down mount with a
-  # 5cm offset along body +z. Update with real intrinsics once measured.
+  # Body → downward camera. Maps body axes (FRD: x=forward, y=right, z=down)
+  # to OpenGL camera axes (x=right, y=up, z=backward/out-of-lens):
+  #   body +x (forward) → cam +y (image up)        ← image up = forward, standard for downward cams
+  #   body +y (right)   → cam +x (image right)
+  #   body +z (down)    → cam -z (lens points body +z = down)
+  # t = +0.05 m along body +z places the lens 5 cm below the body origin.
+  # Real calibration TODO once we have measurements; this is the right
+  # *shape* of the extrinsic for a body-mounted nadir camera.
   - { src: cam_body, dst: cam_downward, type: se3_inline,
-      R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-      t: [0.0, 0.0, -0.05] }
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+# Pre-extracted object point clouds for visualization / debugging. Each entry
+# is loaded by `falsify.visualization.read_ply` and passed through the
+# FrameGraph by `falsify.cli.visualize_frames`, so a single misaligned-by-frame
+# bug shows up as the gate floating away from the trajectory in one of the
+# rendered PLYs. `color` is an RGB triplet (0–1) used by the visualizer to
+# override the file's stored colors so the object stays visible against the
+# trajectory.
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/left_gate.ply,  frame: mocap, color: [0.72, 0.32, 0.32] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/left_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }

@@ -121,6 +121,47 @@ def _load_sim3_file(spec, lookup, base):
     return T.inv() if spec.get("invert", False) else T
 
 
+def _load_sim3_matrix_file(spec, lookup, base):
+    """Load a similarity transform stored as a 4×4 in a JSON file.
+
+    The matrix is interpreted as ``[[s*R, t], [0, 1]]`` and decomposed into
+    a `Sim3` (``p_dst = s*(R @ p_src) + t``). Uniform scale is assumed; the
+    loader takes ``s`` as the mean of the three upper-left column norms and
+    asserts the columns are within ``tol`` of orthogonal.
+
+    The optional ``json_path`` field is a list of keys to navigate into a
+    nested JSON object — useful when one file packs transforms for several
+    scenes (e.g. ``data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json``).
+    """
+    src, dst = _src_dst(spec, lookup)
+    path = _resolve_path(spec["path"], base)
+    data = json.loads(path.read_text())
+    for key in spec.get("json_path", []):
+        data = data[key]
+    M = np.asarray(data, dtype=np.float64)
+    if M.shape != (4, 4):
+        raise ValueError(f"sim3_matrix_file expected (4,4), got {M.shape}")
+
+    A = M[:3, :3]
+    t = M[:3, 3]
+    col_norms = np.linalg.norm(A, axis=0)
+    s = float(col_norms.mean())
+    if s <= 0:
+        raise ValueError(f"sim3_matrix_file: non-positive scale s={s}")
+    if not np.allclose(col_norms, s, rtol=1e-4):
+        raise ValueError(
+            f"sim3_matrix_file: non-uniform column scales {col_norms.tolist()} "
+            f"— not a similarity matrix"
+        )
+    R = A / s
+    if not np.allclose(R @ R.T, np.eye(3), atol=1e-4):
+        raise ValueError(
+            "sim3_matrix_file: rotation part is not orthonormal after dividing by scale"
+        )
+    T = Sim3(s=s, R=R, t=t, src=src, dst=dst)
+    return T.inv() if spec.get("invert", False) else T
+
+
 def _load_dataparser(spec, lookup, base):
     """Load a Nerfstudio ``dataparser_transforms.json`` (COLMAP → NS).
 
@@ -148,4 +189,5 @@ register_loader("se3_inline", _load_se3_inline)
 register_loader("sim3_inline", _load_sim3_inline)
 register_loader("se3_file", _load_se3_file)
 register_loader("sim3_file", _load_sim3_file)
+register_loader("sim3_matrix_file", _load_sim3_matrix_file)
 register_loader("dataparser", _load_dataparser)

@@ -33,9 +33,10 @@ def run_episode(
 3. Convert the goal from MOCAP to NED — passed into the policy factory.
 4. Construct the policy. Construct the `SensorRig` to cover its `required_modalities`.
 5. Construct the `FailureDetector` (optional) and the `SplatNavPlanner` (optional).
-6. Reset the simulator. Roll out under the detector. On failure, the detector returns a `FailureRecord` with the `last_safe_state`.
-7. If recovery is wired and failure fired, the planner produces a `Trajectory[ned]` from `last_safe → goal`.
-8. Bundle everything into a `FalsificationEpisode`.
+6. Build `SimulatorConfig` from `episode_cfg["hz" | "horizon_s" | "policy_hz" | "chunk_steps"]`. For VLA-style chunked rollout set `chunk_steps = actions_per_chunk` so the simulator re-queries only after a chunk is consumed.
+7. Reset the simulator. Roll out under the detector. On failure, the detector returns a `FailureRecord` with the `last_safe_state`.
+8. If recovery is wired and failure fired, the planner produces a `Trajectory[ned]` from `last_safe → goal`.
+9. Bundle everything into a `FalsificationEpisode`.
 
 ## Why factories instead of objects
 

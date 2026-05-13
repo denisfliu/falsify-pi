@@ -87,6 +87,60 @@ def test_vla_passes_prompt_through():
     assert client.payloads[0]["prompt"] == "fly through the gate"   # obs.prompt wins
 
 
+def test_vla_payload_matches_sousvide_format():
+    g = _graph()
+    deltas = np.tile([0.05, 0.0, 0.0], (4, 1))
+    client = _StubOpenPIClient(actions=deltas)
+    pol = VLAPolicy(VLAPolicyConfig(actions_per_chunk=4, image_size=16), g)
+    pol._client = client
+    pol._connected = True
+    obs = _obs_with_dual_cameras(Point.of(0.0, 0.0, 1.0, NED))
+    pol.observe(obs)
+
+    sent = client.payloads[0]
+    # SousVide-style keys.
+    assert set(sent) == {
+        "observation/image", "observation/wrist_image", "observation/3pov_1",
+        "observation/state", "prompt",
+    }
+    # All three image channels are 256? No — image_size override is 16.
+    assert sent["observation/image"].shape       == (16, 16, 3)
+    assert sent["observation/wrist_image"].shape == (16, 16, 3)
+    assert sent["observation/3pov_1"].shape      == (16, 16, 3)
+    # 3pov default is all-zero.
+    assert sent["observation/3pov_1"].sum() == 0
+    # State vector is float32 shape (7,) with yaw at index 3 (zero here).
+    state_vec = sent["observation/state"]
+    assert state_vec.dtype == np.float32
+    assert state_vec.shape == (7,)
+    assert state_vec[3] == 0.0
+    np.testing.assert_array_equal(state_vec[4:], np.zeros(3))
+
+
+def test_vla_negates_yaw_for_server():
+    """NED yaw and MOCAP yaw spin in opposite senses; sign must flip in payload."""
+    from scipy.spatial.transform import Rotation as _R
+    g = _graph()
+    client = _StubOpenPIClient(actions=np.zeros((1, 3)))
+    pol = VLAPolicy(VLAPolicyConfig(actions_per_chunk=1, image_size=8), g)
+    pol._client = client
+    pol._connected = True
+    yaw_ned = 0.4
+    q = _R.from_euler("z", yaw_ned).as_quat()  # xyzw
+    state = DroneState(
+        pos=Point.of(0, 0, 1.0, NED), vel=np.zeros(3),
+        quat_xyzw=q, t=0.0,
+    )
+    obs = Observation(
+        state=state,
+        data={"state.pos": state.pos,
+              "images.forward":  np.zeros((8, 8, 3), dtype=np.uint8),
+              "images.downward": np.zeros((8, 8, 3), dtype=np.uint8)},
+    )
+    pol.observe(obs)
+    np.testing.assert_allclose(client.payloads[0]["observation/state"][3], -yaw_ned, atol=1e-6)
+
+
 def test_vla_rejects_non_ned_state():
     g = _graph()
     client = _StubOpenPIClient(actions=np.zeros((3, 3)))

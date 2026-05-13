@@ -24,7 +24,7 @@ types + a runtime transform registry, so:
 | `types.py` | `Point`, `Pose`, `Trajectory`, `PointCloud` (all frame-tagged) + `assert_frame()` |
 | `transforms.py` | `SE3`, `Sim3` with `@` overload; composition rules: SE3∘SE3=SE3, anything-with-Sim3=Sim3 |
 | `frame_graph.py` | `FrameGraph` — runtime registry + BFS conversion + auto inverse |
-| `loaders.py` | Plugin registry for YAML transform types: `permutation`, `se3_inline`, `sim3_inline`, `se3_file`, `sim3_file`, `dataparser` |
+| `loaders.py` | Plugin registry for YAML transform types: `permutation`, `se3_inline`, `sim3_inline`, `se3_file`, `sim3_file`, `sim3_matrix_file`, `dataparser` |
 | `presets.py` | Named axis-permutation table (`perm0`…`perm7`, `ned_to_zup_xyflip`) compatible with SousVide |
 | `conventions.py` | Documented constants (quaternion order `xyzw`, axis conventions) |
 

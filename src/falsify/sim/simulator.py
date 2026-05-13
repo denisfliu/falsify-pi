@@ -45,7 +45,13 @@ if TYPE_CHECKING:
 class SimulatorConfig:
     hz: int = 10                # control / rollout rate
     horizon_s: float = 10.0     # episode time budget
-    policy_hz: int = 1          # how often to re-query the policy (chunked)
+    policy_hz: int = 1          # fallback re-query rate when chunk_steps is None
+    chunk_steps: Optional[int] = None
+    """Re-query the policy after this many simulator steps. When set, takes
+    precedence over `policy_hz` — used by VLA-style policies that return a
+    full action chunk per query (run all 50 steps, then re-query). The
+    re-query is also forced when the active chunk runs out of waypoints,
+    whichever happens first."""
 
 
 @dataclass
@@ -136,15 +142,24 @@ class Simulator:
         dt = 1.0 / self.cfg.hz
         if max_steps is None:
             max_steps = int(self.cfg.horizon_s * self.cfg.hz)
-        re_query_every = max(1, int(self.cfg.hz / self.cfg.policy_hz))
+        if self.cfg.chunk_steps is not None:
+            chunk_budget = int(self.cfg.chunk_steps)
+        else:
+            chunk_budget = max(1, int(self.cfg.hz / max(self.cfg.policy_hz, 1)))
 
         trace = EpisodeTrace()
         active_chunk: Optional[Trajectory] = None
         chunk_offset = 0
 
         for step in range(max_steps):
-            # Re-query policy at the policy rate.
-            if step % re_query_every == 0:
+            # Re-query the policy when the active chunk is exhausted or the
+            # chunk budget has elapsed (whichever happens first).
+            need_requery = (
+                active_chunk is None
+                or chunk_offset >= chunk_budget
+                or chunk_offset >= len(active_chunk)
+            )
+            if need_requery:
                 obs = sensor_rig.build(self._state)
                 if perturbations is not None:
                     obs = perturbations.apply_observation(obs)
@@ -184,9 +199,12 @@ class Simulator:
     ) -> DroneState:
         """Advance one timestep by sampling the policy's trajectory chunk.
 
-        Linear interpolation between adjacent waypoints by index — adequate
-        for smoke testing. Once the FiGS MPC integrator is wired, this is
-        replaced with a closed-loop dynamics step.
+        Index-based replay: take the chunk's waypoint at ``offset``. When the
+        chunk carries quaternions, pick those up so the next render uses the
+        intended drone orientation (the VLA needs the camera to turn through
+        the gate). Velocity is taken from the chunk if present, else zero.
+        Once the FiGS MPC integrator is wired, this is replaced with a
+        closed-loop dynamics step.
         """
         n = len(chunk)
         if n == 0:
@@ -194,9 +212,10 @@ class Simulator:
         idx = min(offset, n - 1)
         new_pos = Point(chunk.positions[idx], frame=chunk.frame)
         new_vel = chunk.velocities[idx] if chunk.velocities is not None else np.zeros(3)
-        # Orientation: identity for replay; the MPC-backed integrator will
-        # properly integrate body rates and update the quaternion.
-        new_quat = state.quat_xyzw
+        if chunk.quaternions is not None:
+            new_quat = chunk.quaternions[idx]
+        else:
+            new_quat = state.quat_xyzw
         return DroneState(
             pos=new_pos, vel=new_vel, quat_xyzw=new_quat, t=state.t + dt,
         )

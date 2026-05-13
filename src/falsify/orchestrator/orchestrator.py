@@ -149,6 +149,10 @@ def run_episode(
         hz=int(cfg.episode_cfg.get("hz", 10)),
         horizon_s=float(cfg.episode_cfg.get("horizon_s", 5.0)),
         policy_hz=int(cfg.episode_cfg.get("policy_hz", 1)),
+        chunk_steps=(
+            int(cfg.episode_cfg["chunk_steps"])
+            if cfg.episode_cfg.get("chunk_steps") is not None else None
+        ),
     )
     sim = Simulator(sim_cfg, frame_graph)
     sim.reset(initial_state)
