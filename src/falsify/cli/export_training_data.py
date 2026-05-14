@@ -45,11 +45,6 @@ from pathlib import Path
 import numpy as np
 
 
-def _resolve_rel(p: str, base: Path) -> Path:
-    pp = Path(p)
-    return pp if pp.is_absolute() else (base / pp).resolve()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     src = parser.add_mutually_exclusive_group(required=True)
@@ -81,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Override the trajectory's prompt for this run.")
     parser.add_argument("--chunk-steps", type=int, default=50,
                         help="VLA chunk size for --run-dir reconstruction.")
+    parser.add_argument("--near-plane", type=float, default=None,
+                        help="Override the splatfacto rasterizer's near-plane "
+                             "clip threshold. Default in gsplat 0.1.13 is 0.01; "
+                             "set lower (e.g. 0.001) to keep close-up gaussians "
+                             "in the render when the camera flies near geometry.")
     args = parser.parse_args(argv)
 
     # Lazy imports — heavy.
@@ -99,12 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     scene_dir = args.scene.parent
     fg = build_frame_graph(scene_cfg, base_path=scene_dir)
 
-    gsplat_config = _resolve_rel(scene_cfg["gsplat_config_yml"], scene_dir)
-    data_cwd = (_resolve_rel(scene_cfg["gsplat_data_cwd"], scene_dir)
-                if "gsplat_data_cwd" in scene_cfg else None)
-    print(f"[scene] loading gsplat at {gsplat_config} (cwd={data_cwd})")
-    renderer = GSplatRenderer(
-        gsplat_config, world_frame="ned", data_cwd=data_cwd, frame_graph=fg,
+    renderer = GSplatRenderer.from_scene_cfg(
+        scene_cfg, scene_dir=scene_dir, near_plane=args.near_plane,
     )
 
     exporter = TrainingDataExporter(

@@ -12,6 +12,7 @@ churn callers.
 - `Simulator(cfg, frame_graph)` — wraps the integrator. Methods: `reset(initial_state)`, `state` property, `rollout_with_policy(policy, sensor_rig, max_steps=None, detector=None, perturbations=None)`.
 - `EpisodeTrace` — `states`, `policy_outputs`, `chunk_starts`, `failure`. `.trajectory()` is the only frame-tagged accessor.
 - `GSplatRenderer(gsplat_config_yml_path, world_frame="ned")` — lazy-imports FiGS. `render(camera_pose_world: Pose, intrinsics: dict) -> (rgb_uint8, depth_or_None)`. Cameras themselves live in `falsify.sensors/` so policies can opt in.
+  - **Always construct via `GSplatRenderer.from_scene_cfg(scene_cfg, scene_dir=…)`** — it resolves the gsplat config path, data_cwd, FrameGraph, and any declared `scene_edits` in one call. The bare constructor accepts `scene_edits=` optionally, which is how renders against an edited scene (e.g. `configs/scenes/center_gate.yaml`) silently degrade to the un-edited gsplat if a caller forgets. The factory closes that hole. If you pass both `scene_cfg=` and `scene_edits=` directly to the constructor, they must match — mismatched edits raise.
 - `body_to_world_se3(state)` and `camera_to_world_pose(state, body_from_camera)` — runtime body↔world hinge in `poses.py`. The `Simulator` and the sensor factory take this as a callable so the static/runtime split stays explicit.
 
 ## Replay-integrator semantics

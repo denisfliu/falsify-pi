@@ -123,20 +123,37 @@ The active venv is symlinked to `~/code/SousVide/.venv` and pinned via
 `~/code/SousVide/uv.lock` (torch 2.1.2+cu121, numpy 1.26.4,
 gsplat 0.1.13). `gsplat`'s CUDA extension is built lazily via
 `torch.utils.cpp_extension.load()` into
-`~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`. As of 2026-05-13
-the cached `gsplat_cuda.so` loads fine and ns-viewer / `GSplatRenderer`
-work end-to-end — the previously reported
-`pybind11/cast.h:45: error: expected template-name before '<' token`
-rebuild failure is **not currently reproducible**.
+`~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`.
 
-If a future session legitimately sees the JIT rebuild fail (real
-pybind11 error, not collateral damage from another problem), try in
-this order:
+**Root cause of the recurring rebuild failure.** CUDA 12.0's nvcc
+(V12.0.140) officially supports gcc up to 12; Ubuntu 24.04 ships gcc 13.3
+as `/usr/bin/gcc`. The combo of nvcc 12.0 + gcc 13 rejects the pybind11
+template syntax in torch's headers with:
 
-1. Wipe the cache directory entirely (`rm -rf
-   ~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`) so ninja
-   rebuilds from scratch. Touching individual file mtimes does NOT
-   help — ninja keys on a build-command hash, not mtimes.
+```
+pybind11/cast.h:45: error: expected template-name before '<' token
+```
+
+Any time the JIT cache is invalidated (gsplat reinstall, torch upgrade,
+`rm -rf` of the cache, kernel-update-induced build-key change, etc.), the
+rebuild runs against whatever `/usr/bin/gcc` resolves to and fails. The
+fix is to pin nvcc's host compiler to `gcc-11` (also installed on the
+system) before any process that may JIT-build a torch extension:
+
+```bash
+source tools/env.sh   # exports CC=gcc-11, CXX=g++-11, NVCC_PREPEND_FLAGS=-ccbin /usr/bin/g++-11
+```
+
+The exports only matter at build time; sourcing again with a warm cache
+is a no-op. `tools/env.sh` also fixes the SousVide-venv PYTHONPATH so the
+falsify package and the external/{FiGS,splatnav} submodules import.
+
+If a rebuild still fails after sourcing `tools/env.sh`:
+
+1. Wipe the cache (`rm -rf ~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`)
+   so ninja rebuilds from scratch with the pinned toolchain. Touching
+   individual file mtimes does NOT help — ninja keys on a build-command
+   hash, not mtimes.
 2. Surgical reinstall that leaves torch/numpy alone:
    `uv pip install --reinstall-package gsplat --no-deps gsplat==0.1.13`.
 3. For mask / move correctness checks that don't need photorealistic

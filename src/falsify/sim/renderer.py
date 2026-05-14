@@ -34,7 +34,13 @@ from typing import Any, Optional
 import numpy as np
 
 from falsify.geometry import FrameGraph, Pose, Sim3, SE3, assert_frame
-from .scene_edits import SceneEdit, apply_edits_to_pipeline
+from .scene_edits import SceneEdit, apply_edits_to_pipeline, load_scene_edits
+
+
+def _resolve_rel(value: str | Path, base: Path) -> Path:
+    """Resolve a possibly-relative path against ``base``."""
+    p = Path(value)
+    return p if p.is_absolute() else (base / p).resolve()
 
 
 @contextmanager
@@ -67,11 +73,47 @@ class GSplatRenderer:
         frame_graph: Optional[FrameGraph] = None,
         gsplat_frame: str = "ns",
         scene_edits: Optional[list[SceneEdit]] = None,
+        scene_cfg: Optional[dict] = None,
+        near_plane: Optional[float] = None,
     ) -> None:
+        # If the caller hands us the scene_cfg, derive scene_edits from it.
+        # This is the safe-by-construction path used by ``from_scene_cfg`` —
+        # no chance of silently dropping edits because the caller forgot to
+        # call ``load_scene_edits`` themselves.
+        if scene_cfg is not None:
+            declared = load_scene_edits(scene_cfg)
+            if scene_edits is None:
+                scene_edits = declared or None
+            else:
+                # Caller passed both — they MUST agree, otherwise one of
+                # the two is stale.
+                declared_names = [e.name for e in (declared or [])]
+                passed_names = [e.name for e in scene_edits]
+                if declared_names != passed_names:
+                    raise ValueError(
+                        f"Inconsistent scene_edits: scene_cfg declares "
+                        f"{declared_names} but scene_edits= passed {passed_names}. "
+                        "Pass exactly one of (scene_cfg=, scene_edits=); "
+                        "prefer GSplatRenderer.from_scene_cfg(scene_cfg, ...)."
+                    )
+
         gsplat_path = Path(gsplat_path)
         data_cwd = Path(data_cwd) if data_cwd is not None else None
         # Lazy import — FiGS pulls in nerfstudio + CUDA bindings.
         from figs.render.gsplat import GSplat as _FiGSGSplat  # type: ignore
+
+        # Lower the splatfacto rasterizer's near-plane clip threshold if
+        # requested. gsplat 0.1.13's ``project_gaussians`` has a default
+        # ``clip_thresh=0.01`` (gsplat/project_gaussians.py:26) and
+        # nerfstudio's splatfacto calls it without overriding — so gaussians
+        # within 0.01 view-space-z of the camera get culled, which can eat
+        # gate edges and table corners when the camera is close. Monkey-patch
+        # the splatfacto module-level binding so every downstream render in
+        # this process sees the lowered threshold.
+        if near_plane is not None:
+            self._patch_splatfacto_near_plane(float(near_plane))
+            print(f"[gsplat] near plane (clip_thresh) → {float(near_plane):.5f}")
+
         with _chdir(data_cwd):
             self._impl = _FiGSGSplat(gsplat_path)
         self._world_frame = world_frame
@@ -89,14 +131,65 @@ class GSplatRenderer:
         # they mutate ``pipeline.model.means`` / ``.quats`` in place.
         if scene_edits and frame_graph is not None:
             n = apply_edits_to_pipeline(self._impl.pipeline, scene_edits, frame_graph)
-            for edit in scene_edits:
-                pass  # touched count printed below
             print(f"[gsplat] applied {len(scene_edits)} scene edit(s); "
                   f"{n} Gaussians modified")
         elif scene_edits:
             raise ValueError(
                 "scene_edits requires frame_graph= to lift the edit into NS"
             )
+
+    @staticmethod
+    def _patch_splatfacto_near_plane(clip_thresh: float) -> None:
+        """Override ``nerfstudio.models.splatfacto.project_gaussians``'s
+        default ``clip_thresh`` so the rasterizer's near plane is set to
+        ``clip_thresh`` rather than the upstream default 0.01. Idempotent
+        per-process (re-patching reuses the still-bound original).
+        """
+        import nerfstudio.models.splatfacto as _sf  # type: ignore
+        original = getattr(_sf, "_falsify_orig_project_gaussians", _sf.project_gaussians)
+
+        def _patched(*args, **kwargs):
+            kwargs.setdefault("clip_thresh", clip_thresh)
+            return original(*args, **kwargs)
+
+        _sf._falsify_orig_project_gaussians = original  # type: ignore[attr-defined]
+        _sf.project_gaussians = _patched
+
+    @classmethod
+    def from_scene_cfg(
+        cls,
+        scene_cfg: dict,
+        *,
+        scene_dir: str | Path,
+        world_frame: str = "ned",
+        gsplat_frame: str = "ns",
+        near_plane: Optional[float] = None,
+    ) -> "GSplatRenderer":
+        """Construct a renderer from a parsed scene YAML.
+
+        Resolves ``gsplat_config_yml`` / ``gsplat_data_cwd`` (both relative
+        to ``scene_dir``), builds the FrameGraph, and loads any declared
+        ``scene_edits`` — the four boilerplate pieces every caller would
+        otherwise have to assemble by hand. Use this in preference to the
+        bare constructor: it makes it impossible to forget ``scene_edits``.
+        """
+        # Lazy import — avoid pulling falsify.io at module import time.
+        from falsify.io import build_frame_graph
+
+        scene_dir = Path(scene_dir)
+        gsplat_config = _resolve_rel(scene_cfg["gsplat_config_yml"], scene_dir)
+        data_cwd = (_resolve_rel(scene_cfg["gsplat_data_cwd"], scene_dir)
+                    if "gsplat_data_cwd" in scene_cfg else None)
+        fg = build_frame_graph(scene_cfg, base_path=scene_dir)
+        return cls(
+            gsplat_config,
+            world_frame=world_frame,
+            data_cwd=data_cwd,
+            frame_graph=fg,
+            gsplat_frame=gsplat_frame,
+            scene_cfg=scene_cfg,
+            near_plane=near_plane,
+        )
 
     def _set_tw2g_from_graph(
         self,

@@ -38,7 +38,6 @@ For (scene × trajectory) cross-products and mixed sources, drive
 
 ```python
 from pathlib import Path
-from falsify.geometry import Point
 from falsify.io import build_frame_graph, load_yaml
 from falsify.sim.renderer import GSplatRenderer
 from falsify.training import (
@@ -54,13 +53,14 @@ for scene_path in ["configs/scenes/left_gate.yaml", "configs/scenes/right_gate.y
     scene_path = Path(scene_path)
     scene_cfg = load_yaml(scene_path)
     fg = build_frame_graph(scene_cfg, base_path=scene_path.parent)
-    gsplat_yml = scene_path.parent / scene_cfg["gsplat_config_yml"]
-    data_cwd = scene_path.parent / scene_cfg.get("gsplat_data_cwd", ".")
 
-    renderer = GSplatRenderer(
-        gsplat_yml.resolve(), world_frame="ned",
-        data_cwd=data_cwd.resolve(), frame_graph=fg,
-    )
+    # GSplatRenderer.from_scene_cfg resolves gsplat_config_yml /
+    # gsplat_data_cwd, builds the FrameGraph, AND applies any declared
+    # scene_edits. Always use this in preference to the bare constructor —
+    # the bare form is easy to instantiate without scene_edits, which silently
+    # renders the un-edited scene (e.g. the center-gate scene is a left-gate
+    # gsplat with edits; without them you'd render the original gate pose).
+    renderer = GSplatRenderer.from_scene_cfg(scene_cfg, scene_dir=scene_path.parent)
     exporter = TrainingDataExporter(
         scene_cfg=scene_cfg, frame_cfg=frame_cfg, frame_graph=fg,
         renderer=renderer.render, embodiment=embodiment,

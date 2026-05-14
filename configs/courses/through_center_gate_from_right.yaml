@@ -1,0 +1,61 @@
+# Center-gate course: drone enters the gate plane traveling -y, passing on the
+# LEFT side (north, +y) of the table on the way in, then OVERSHOOTS south of
+# the gate before swinging back up to hover above the stuffed animal.
+#
+# Landmarks (MOCAP, post-edit center_gate scene):
+#   gate plane:           y = -0.25 (plane normal along ±y)
+#   gate center:          (2.75, -0.25, 1.5)
+#   left_table center:    (1.525, -0.215, 0.325) — stuffed animal sits on top
+#
+# Trajectory: start → approach (north of table) → pre_gate (just north of
+# gate, perturbation target) → gate (yaw=-π/2, -y traversal) → post_gate
+# (south overshoot at y=-1.10) → hover → hover_hold.
+#
+# Distinction from from_left: from_left has a tight post_gate at
+# (2.75, -0.67, 1.5) and curls straight to hover; from_right overshoots
+# to (2.75, -1.10, 1.4) before returning, training a wider south arc.
+
+name: through_center_gate_from_right
+scene: configs/scenes/center_gate.yaml
+frame: mocap
+fps: 10
+total_time_s: 30.0   # 28 s to reach hover + 2 s hover hold
+yaw_mode: tangent
+
+waypoints:
+  # start       yaw=0       → body_x = +x_mocap (toward gate region)
+  # approach                → north of table (y ≥ 0.5)
+  # pre_gate                → midpoint of approach↔gate; perturbation target for
+  #                            "corrective" variants. Sits east of the table
+  #                            (x > 1.85) so small perturbations don't push it
+  #                            into the table footprint, and is far enough from
+  #                            the gate plane (Δy = 0.6 m) that small lateral
+  #                            perturbations don't make the spline cross the
+  #                            gate twice.
+  # gate        yaw=-1.5708 → body_x = -y_mocap (flight direction through plane)
+  # post_gate               → south overshoot, sets up wider arc back to hover
+  # hover       yaw=0       → body_x back to +x_mocap (arrival at hover XYZ)
+  # hover_hold  yaw=0       → same XYZ as hover; ~2 s of station-keeping
+  - { name: start,       p: [0.00,  0.00, 1.5], yaw: 0.0, t: 0.0 }
+  - { name: approach,    p: [1.40,  -1.0, 1.5] }
+  - { name: pre_gate,    p: [2.75,  -0.75, 1.5] }
+  - { name: gate,        p: [2.75, -0.25, 1.5], yaw: -1.5708 }
+  - { name: post_gate,   p: [2.75, 0.23, 1.4] }
+  - { name: hover,       p: [1.525, -0.615, 1.0], yaw: 0.0, t: 28.0 }
+  - { name: hover_hold,  p: [1.525, -0.615, 1.0], yaw: 0.0, t: 30.0 }
+
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0
+
+corrective_perturbations:
+  target_waypoint: pre_gate
+  modes: [up, down, left, right]
+  magnitude_range_m: [0.1, 0.3]
+  probability: 0.7
+
+trajectory_perturbations:
+  radius_m: 0.05
+  exclude_waypoints: []
+  samples: 50
+  seed: 0

@@ -1,0 +1,47 @@
+name: through_left_gate__left_006
+frame: mocap
+fps: 10
+total_time_s: 24.0
+yaw_mode: tangent
+scene: configs/scenes/left_gate.yaml
+waypoints:
+- name: start
+  p:
+  - -0.0034233803138924656
+  - -0.02765163192695555
+  - 1.4781726043478913
+  yaw: 0.0
+  t: 0.0
+- name: approach
+  p:
+  - 0.1354952362508696
+  - 0.7947401368190182
+  - 1.4878543680694527
+- name: gate
+  p:
+  - 0.9149482654473006
+  - 0.7394944604420478
+  - 1.5200690486120998
+  yaw: 0.724
+- name: post_gate
+  p:
+  - 1.72227873244159
+  - 1.3164796093482443
+  - 1.382992023636079
+- name: hover
+  p:
+  - 1.5454103566893647
+  - -0.6241602859089969
+  - 1.0341828895354792
+  yaw: 0.0
+  t: 22.0
+- name: hover_hold
+  p:
+  - 1.49924148379915
+  - -0.6227172877755249
+  - 1.0046077197076901
+  yaw: 0.0
+  t: 24.0
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0

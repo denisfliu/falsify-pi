@@ -61,6 +61,58 @@ class Waypoint:
 
 
 @dataclass(frozen=True)
+class CorrectivePerturbation:
+    """Course-level configuration for *corrective* variants — discrete shifts
+    of one waypoint along {up, down, left, right} that train the policy to
+    recover from being off-axis at a specific point in the trajectory
+    (typically `pre_gate`).
+
+    Sampling per variant (stochastic strategy):
+      - Bernoulli(``probability``) decides whether this variant is corrective.
+      - If corrective: uniformly pick a mode from ``modes`` and a magnitude
+        from ``magnitude_range_m``; apply to ``target_waypoint``.
+      - Otherwise the variant is baseline (no corrective shift), distinguished
+        from other baselines only by the trajectory-noise block.
+    """
+    target_waypoint: str
+    modes: tuple[str, ...] = ("up", "down", "left", "right")
+    magnitude_range_m: tuple[float, float] = (0.1, 0.3)
+    probability: float = 1.0    # per-sample chance to apply a corrective shift
+    # ``samples_per_mode`` / ``seed`` are legacy fields from the deterministic
+    # enumeration sampler; ignored by the stochastic strategy used by
+    # ``sample_stochastic_variants``. Kept in the dataclass so old YAMLs load.
+    samples_per_mode: int = 1
+    seed: int = 0
+
+
+@dataclass(frozen=True)
+class TrajectoryPerturbation:
+    """Course-level configuration for *trajectory* noise — small spherical
+    jitter applied to every waypoint to induce variance across samples
+    without changing the qualitative shape of the trajectory.
+
+    Sampling pattern (planned, not yet implemented in ``perturb_course``):
+      for each new variant:
+        - per waypoint not in ``exclude_waypoints``:
+            displace by a vector drawn uniformly in a ball of radius
+            ``radius_m`` (xyz Gaussian-ish or uniform-in-sphere depending
+            on implementation choice).
+
+    Combine with a CorrectivePerturbation by applying both in sequence:
+    pick a corrective mode (or skip for the standard-flight baseline),
+    then add the trajectory noise on top.
+    """
+    radius_m: float = 0.05
+    exclude_waypoints: tuple[str, ...] = ()
+    samples: int = 1                # variants to draw per nominal
+    seed: int = 0
+
+
+# Back-compat alias: older modules may still import ``Perturbation``.
+Perturbation = CorrectivePerturbation
+
+
+@dataclass(frozen=True)
 class Course:
     name: str
     frame: str
@@ -72,6 +124,8 @@ class Course:
     max_speed_mps: Optional[float] = None
     max_yaw_rate_rad_s: Optional[float] = None
     notes: str = ""
+    corrective_perturbations: Optional[CorrectivePerturbation] = None
+    trajectory_perturbations: Optional[TrajectoryPerturbation] = None
 
     def __post_init__(self):
         if len(self.waypoints) < 2:
@@ -202,6 +256,22 @@ def save_course(course: Course, path: str | Path) -> Path:
         vel["max_yaw_rate_rad_s"] = float(course.max_yaw_rate_rad_s)
     if vel:
         cfg["velocity_constraints"] = vel
+    if course.corrective_perturbations is not None:
+        cp = course.corrective_perturbations
+        cfg["corrective_perturbations"] = {
+            "target_waypoint": cp.target_waypoint,
+            "modes": list(cp.modes),
+            "magnitude_range_m": list(cp.magnitude_range_m),
+            "probability": float(cp.probability),
+        }
+    if course.trajectory_perturbations is not None:
+        tp = course.trajectory_perturbations
+        cfg["trajectory_perturbations"] = {
+            "radius_m": float(tp.radius_m),
+            "exclude_waypoints": list(tp.exclude_waypoints),
+            "samples": int(tp.samples),
+            "seed": int(tp.seed),
+        }
     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
     return path
 
@@ -221,6 +291,29 @@ def load_course(path: str | Path) -> Course:
         for i, w in enumerate(cfg["waypoints"])
     )
     vel = cfg.get("velocity_constraints", {}) or {}
+
+    # corrective_perturbations is the canonical key; ``perturbation`` is
+    # accepted as a synonym for one upgrade cycle so older YAMLs still load.
+    cp_cfg = cfg.get("corrective_perturbations") or cfg.get("perturbation")
+    corrective = None
+    if cp_cfg is not None:
+        corrective = CorrectivePerturbation(
+            target_waypoint=str(cp_cfg["target_waypoint"]),
+            modes=tuple(cp_cfg.get("modes", ("up", "down", "left", "right"))),
+            magnitude_range_m=tuple(cp_cfg.get("magnitude_range_m", (0.1, 0.3))),
+            probability=float(cp_cfg.get("probability", 1.0)),
+            samples_per_mode=int(cp_cfg.get("samples_per_mode", 1)),
+            seed=int(cp_cfg.get("seed", 0)),
+        )
+    tp_cfg = cfg.get("trajectory_perturbations")
+    trajectory = None
+    if tp_cfg is not None:
+        trajectory = TrajectoryPerturbation(
+            radius_m=float(tp_cfg.get("radius_m", 0.05)),
+            exclude_waypoints=tuple(tp_cfg.get("exclude_waypoints", ())),
+            samples=int(tp_cfg.get("samples", 1)),
+            seed=int(tp_cfg.get("seed", 0)),
+        )
     return Course(
         name=cfg["name"],
         frame=cfg.get("frame", "mocap"),
@@ -232,4 +325,6 @@ def load_course(path: str | Path) -> Course:
         max_speed_mps=vel.get("max_speed_mps"),
         max_yaw_rate_rad_s=vel.get("max_yaw_rate_rad_s"),
         notes=cfg.get("notes", ""),
+        corrective_perturbations=corrective,
+        trajectory_perturbations=trajectory,
     )

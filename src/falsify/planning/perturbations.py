@@ -38,10 +38,10 @@ from typing import Iterable, Literal, Sequence
 
 import numpy as np
 
-from .waypoints import Course, Waypoint
+from .waypoints import Course, CorrectivePerturbation, TrajectoryPerturbation, Waypoint
 
 
-Direction = Literal["center", "up", "down", "left", "right"]
+Direction = Literal["center", "none", "up", "down", "left", "right"]
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,7 @@ def _direction_to_unit_vec(
     heading_unit_xy: np.ndarray,
 ) -> np.ndarray:
     """3-vector in the course frame for a body-relative ``direction``."""
-    if direction == "center":
+    if direction in ("center", "none"):
         return np.zeros(3)
     if direction == "up":
         return np.array([0.0, 0.0, 1.0])
@@ -145,6 +145,104 @@ def perturb_waypoint(
 # ---------------------------------------------------------------------------
 # Batch sampling
 # ---------------------------------------------------------------------------
+
+
+def _sample_in_ball(rng: np.random.Generator, radius: float) -> np.ndarray:
+    """Uniformly sample a 3-vector inside a ball of given radius."""
+    if radius <= 0.0:
+        return np.zeros(3)
+    # Marsaglia: unit direction × radius * uniform^{1/3}
+    direction = rng.normal(0.0, 1.0, size=3)
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-12:
+        return np.zeros(3)
+    direction /= norm
+    r = radius * float(rng.uniform(0.0, 1.0)) ** (1.0 / 3.0)
+    return direction * r
+
+
+def sample_stochastic_variants(
+    course: Course,
+    *,
+    corrective: CorrectivePerturbation | None,
+    trajectory: TrajectoryPerturbation,
+) -> list[CourseVariant]:
+    """Sample ``trajectory.samples`` variants stochastically.
+
+    Per variant:
+      1. With probability ``corrective.probability``, apply one corrective
+         shift to ``corrective.target_waypoint`` (mode and magnitude both
+         drawn uniformly from the corrective block).
+      2. For every waypoint not in ``trajectory.exclude_waypoints``, add a
+         uniform-in-ball displacement of radius ``trajectory.radius_m``.
+
+    Every returned variant is unique by construction (the trajectory noise
+    is i.i.d. across variants); no two splines coincide even for the same
+    corrective mode.
+
+    Labels are ``"<mode>_<NNN>"`` with per-mode zero-padded counters where
+    ``mode ∈ {none, up, down, left, right}``; ``none`` denotes a sample
+    that drew "no corrective" in step 1.
+    """
+    rng = np.random.default_rng(trajectory.seed)
+    n = int(trajectory.samples)
+    if n < 1:
+        raise ValueError(f"trajectory.samples must be >= 1; got {n}")
+    radius = float(trajectory.radius_m)
+    if radius < 0.0:
+        raise ValueError(f"trajectory.radius_m must be >= 0; got {radius}")
+    excluded = set(trajectory.exclude_waypoints)
+
+    p_corrective = (float(corrective.probability) if corrective is not None else 0.0)
+    if not (0.0 <= p_corrective <= 1.0):
+        raise ValueError(f"corrective.probability must be in [0, 1]; got {p_corrective}")
+    if corrective is not None:
+        cm_lo, cm_hi = (float(corrective.magnitude_range_m[0]),
+                        float(corrective.magnitude_range_m[1]))
+        if cm_lo > cm_hi:
+            raise ValueError(
+                f"corrective.magnitude_range_m must be (lo, hi); got {corrective.magnitude_range_m}"
+            )
+
+    out: list[CourseVariant] = []
+    counters: dict[str, int] = {}
+    width = max(3, len(str(n - 1)))
+
+    for _ in range(n):
+        # ---- step 1: corrective decision ----------------------------------
+        do_corrective = (corrective is not None
+                         and float(rng.uniform()) < p_corrective)
+        if do_corrective:
+            mode = corrective.modes[int(rng.integers(0, len(corrective.modes)))]
+            mag = float(rng.uniform(cm_lo, cm_hi))
+            shifted = perturb_waypoint(course, corrective.target_waypoint, mode, mag)
+        else:
+            mode = "none"
+            mag = 0.0
+            shifted = course
+
+        # ---- step 2: per-waypoint trajectory noise ------------------------
+        new_wps = []
+        for wp in shifted.waypoints:
+            if wp.name in excluded or radius == 0.0:
+                new_wps.append(wp)
+                continue
+            noise = _sample_in_ball(rng, radius)
+            new_wps.append(replace(wp, p=wp.p + noise))
+        new_course = replace(shifted, waypoints=tuple(new_wps))
+
+        # ---- label + rename -----------------------------------------------
+        k = counters.setdefault(mode, 0)
+        counters[mode] = k + 1
+        label = f"{mode}_{k:0{width}d}"
+        new_course = replace(new_course, name=f"{course.name}__{label}")
+        out.append(CourseVariant(
+            course=new_course, label=label, direction=mode,
+            magnitude_m=mag,
+            waypoint_name=(corrective.target_waypoint if do_corrective else ""),
+        ))
+
+    return out
 
 
 def sample_variants(

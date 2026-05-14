@@ -20,7 +20,7 @@ name: through_left_gate
 scene: configs/scenes/left_gate.yaml
 frame: mocap
 fps: 10
-total_time_s: 8.0
+total_time_s: 24.0   # 22 s to reach hover + 2 s hover hold
 
 # yaw_mode:
 #   tangent: yaw follows direction of motion (atan2 of position derivative)
@@ -41,8 +41,21 @@ waypoints:
   - { name: approach,  p: [0.45, 0.40, 1.5] }
   - { name: gate,      p: [0.915, 0.75, 1.5], yaw: 0.724 }
   - { name: post_gate, p: [1.75, 1.30, 1.4] }
-  - { name: hover,     p: [1.525, -0.615, 1.0], yaw: 0.0, t: 8.0 }
+  - { name: hover,       p: [1.525, -0.615, 1.0], yaw: 0.0, t: 22.0 }
+  - { name: hover_hold,  p: [1.525, -0.615, 1.0], yaw: 0.0, t: 24.0 }
 
 velocity_constraints:
   max_speed_mps: 1.5        # informational; spline planner ignores; MPC will honour
   max_yaw_rate_rad_s: 1.0
+
+corrective_perturbations:
+  target_waypoint: approach
+  modes: [up, down, left, right]
+  magnitude_range_m: [0.2, 0.5]
+  probability: 0.7
+
+trajectory_perturbations:
+  radius_m: 0.05
+  exclude_waypoints: []
+  samples: 50
+  seed: 0

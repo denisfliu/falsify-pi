@@ -1,0 +1,46 @@
+name: through_right_gate__down_002
+frame: mocap
+fps: 10
+total_time_s: 24.0
+yaw_mode: tangent
+scene: configs/scenes/right_gate.yaml
+waypoints:
+- name: start
+  p:
+  - -0.0328094030383776
+  - 0.007018890651966225
+  - 1.495928854611097
+  yaw: 0.0
+  t: 0.0
+- name: approach
+  p:
+  - 0.14484936641948676
+  - -0.6103818820527763
+  - 1.1699816011902555
+- name: gate
+  p:
+  - 0.47743072439974404
+  - -1.190537232132951
+  - 1.510839817987248
+- name: post_gate
+  p:
+  - 0.7023738273898257
+  - -1.4543558720169654
+  - 1.4184710155037337
+- name: hover
+  p:
+  - 1.5223526942376286
+  - -0.640637402010897
+  - 1.017896307897986
+  yaw: 0.0
+  t: 22.0
+- name: hover_hold
+  p:
+  - 1.5189354214103539
+  - -0.6201694586648482
+  - 0.973640930959619
+  yaw: 0.0
+  t: 24.0
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0

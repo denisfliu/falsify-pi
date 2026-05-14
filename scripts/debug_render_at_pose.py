@@ -59,16 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         return path if path.is_absolute() else (scene_dir / path).resolve()
 
     fg = build_frame_graph(scene_cfg, base_path=scene_dir)
-    gsplat_config = _resolve(scene_cfg["gsplat_config_yml"])
-    data_cwd = _resolve(scene_cfg["gsplat_data_cwd"]) if "gsplat_data_cwd" in scene_cfg else None
-    print(f"[scene] gsplat = {gsplat_config}")
-    print(f"[scene] cwd    = {data_cwd}")
-
-    from falsify.sim.scene_edits import load_scene_edits
-    renderer = GSplatRenderer(
-        gsplat_config, world_frame="ned", data_cwd=data_cwd, frame_graph=fg,
-        scene_edits=load_scene_edits(scene_cfg),
-    )
+    renderer = GSplatRenderer.from_scene_cfg(scene_cfg, scene_dir=scene_dir)
     Tw2g = np.asarray(renderer._impl.Tw2g)
     print("\nFiGS Tw2g (NED → NS):")
     np.set_printoptions(precision=4, suppress=True)

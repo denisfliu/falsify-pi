@@ -1,0 +1,67 @@
+# Center-gate course: drone enters the gate plane traveling -y, passing on the
+# LEFT side (north, +y) of the table on the way in and going STRAIGHT to the
+# hover after the gate — no post-gate detour and no double-crossing of the
+# gate plane.
+#
+# Landmarks (MOCAP, post-edit center_gate scene):
+#   gate plane:           y = -0.25 (plane normal along ±y)
+#   gate center:          (2.75, -0.25, 1.5)
+#   left_table footprint: x ∈ [1.20, 1.85], y ∈ [-0.85, 0.40], top z ≈ 0.6
+#
+# Trajectory: start → approach (north of table, y ≥ 0.5) → pre_gate (just
+# north of the gate, perturbation target) → gate (yaw=-π/2, -y traversal)
+# → post_gate (direct curl, slightly south of gate) → hover → hover_hold.
+# The gate plane is crossed exactly once.
+#
+# Distinction from from_right: from_right has a post_gate overshoot at
+# (2.75, -1.10, 1.4) that swings south then returns to hover; from_left
+# is the direct version with no overshoot.
+
+name: through_center_gate_from_left
+scene: configs/scenes/center_gate.yaml
+frame: mocap
+fps: 10
+total_time_s: 30.0   # 28 s to reach hover + 2 s hover hold
+yaw_mode: tangent
+
+waypoints:
+  # start       yaw=0       → body_x = +x_mocap
+  # approach                → north of table (y ≥ 0.5)
+  # pre_gate                → midpoint of approach↔gate; perturbation target for
+  #                            "corrective" variants. East of the table (x > 1.85)
+  #                            with Δy = 0.5 m to the gate plane, so small
+  #                            lateral perturbations don't make the spline cross
+  #                            the gate twice.
+  # gate        yaw=-1.5708 → body_x = -y_mocap (-y traversal)
+  # post_gate               → south of gate plane (y < -0.25), slightly elevated;
+  #                            lets the spline curl smoothly toward hover
+  # hover       yaw=0       → arrival at hover XYZ (south of gate plane)
+  # hover_hold  yaw=0       → 2 s of station-keeping at hover
+  - { name: start,       p: [0.00,  0.00, 1.5], yaw: 0.0, t: 0.0 }
+  - { name: approach,    p: [1.40,  0.50, 1.5] }
+  - { name: pre_gate,    p: [2.75,  0.25, 1.5] }
+  - { name: gate,        p: [2.75, -0.25, 1.5], yaw: -1.5708 }
+  - { name: post_gate,   p: [2.75, -0.67, 1.5] }
+  - { name: hover,       p: [1.525, -0.615, 1.0], yaw: 0.0, t: 28.0 }
+  - { name: hover_hold,  p: [1.525, -0.615, 1.0], yaw: 0.0, t: 30.0 }
+
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0
+
+# Corrective shift: per-sample Bernoulli decides whether this variant gets a
+# discrete up/down/left/right shift of pre_gate (trains the policy to recover
+# from being off-axis at the moment of gate entry).
+corrective_perturbations:
+  target_waypoint: pre_gate
+  modes: [up, down, left, right]
+  magnitude_range_m: [0.1, 0.3]
+  probability: 0.8              # ~70% of samples are corrective, ~30% are pure baseline+noise
+
+# Trajectory noise: every non-anchor waypoint is jittered by a vector drawn
+# uniformly in a ball of this radius. Makes every variant unique by construction.
+trajectory_perturbations:
+  radius_m: 0.05
+  exclude_waypoints: []
+  samples: 50
+  seed: 0

@@ -1,0 +1,52 @@
+name: through_center_gate_from_left__right_007
+frame: mocap
+fps: 10
+total_time_s: 30.0
+yaw_mode: tangent
+scene: configs/scenes/center_gate.yaml
+waypoints:
+- name: start
+  p:
+  - -0.02800736462554068
+  - 0.01410476729115877
+  - 1.5154738424163456
+  yaw: 0.0
+  t: 0.0
+- name: approach
+  p:
+  - 1.3625955623955461
+  - 0.482468044624024
+  - 1.5256893366419744
+- name: pre_gate
+  p:
+  - 2.6030733562571053
+  - 0.03509243196142668
+  - 1.4641033510586055
+- name: gate
+  p:
+  - 2.7782475059199645
+  - -0.25570853556822537
+  - 1.464930673643545
+  yaw: -1.5708
+- name: post_gate
+  p:
+  - 2.7667533170179968
+  - -0.6619200205867742
+  - 1.456497288873571
+- name: hover
+  p:
+  - 1.5243797793258211
+  - -0.6029600391155135
+  - 1.040813019604726
+  yaw: 0.0
+  t: 28.0
+- name: hover_hold
+  p:
+  - 1.5423202800792206
+  - -0.5984008695933258
+  - 1.0184842031390058
+  yaw: 0.0
+  t: 30.0
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0
