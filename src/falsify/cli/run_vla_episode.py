@@ -239,9 +239,15 @@ def main(argv: list[str] | None = None) -> int:
     data_cwd = (_resolve(scene_cfg["gsplat_data_cwd"])
                 if "gsplat_data_cwd" in scene_cfg else None)
     fg = build_frame_graph(scene_cfg, base_path=scene_dir)
+    from falsify.sim.scene_edits import load_scene_edits
+    edits = load_scene_edits(scene_cfg)
     print(f"[scene] loading gsplat at {gsplat_path} (cwd={data_cwd})")
+    if edits:
+        print(f"[scene] {len(edits)} scene edit(s) declared: "
+              f"{[e.name for e in edits]}")
     renderer = GSplatRenderer(
         gsplat_path, world_frame="ned", data_cwd=data_cwd, frame_graph=fg,
+        scene_edits=edits,
     )
 
     # ---- VLA-driven episode -------------------------------------------

@@ -34,6 +34,7 @@ from typing import Any, Optional
 import numpy as np
 
 from falsify.geometry import FrameGraph, Pose, Sim3, SE3, assert_frame
+from .scene_edits import SceneEdit, apply_edits_to_pipeline
 
 
 @contextmanager
@@ -65,6 +66,7 @@ class GSplatRenderer:
         data_cwd: str | Path | None = None,
         frame_graph: Optional[FrameGraph] = None,
         gsplat_frame: str = "ns",
+        scene_edits: Optional[list[SceneEdit]] = None,
     ) -> None:
         gsplat_path = Path(gsplat_path)
         data_cwd = Path(data_cwd) if data_cwd is not None else None
@@ -81,6 +83,20 @@ class GSplatRenderer:
         # because FiGS' baked-in Tw2g misses the dataparser step.
         if frame_graph is not None:
             self._set_tw2g_from_graph(frame_graph, world_frame, gsplat_frame)
+
+        # Apply scene edits (Gaussian-level translations / rotations) once
+        # at load time. Subsequent renders pick them up automatically since
+        # they mutate ``pipeline.model.means`` / ``.quats`` in place.
+        if scene_edits and frame_graph is not None:
+            n = apply_edits_to_pipeline(self._impl.pipeline, scene_edits, frame_graph)
+            for edit in scene_edits:
+                pass  # touched count printed below
+            print(f"[gsplat] applied {len(scene_edits)} scene edit(s); "
+                  f"{n} Gaussians modified")
+        elif scene_edits:
+            raise ValueError(
+                "scene_edits requires frame_graph= to lift the edit into NS"
+            )
 
     def _set_tw2g_from_graph(
         self,

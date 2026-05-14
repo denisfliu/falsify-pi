@@ -117,6 +117,49 @@ uv sync
 source .venv/bin/activate
 ```
 
+### Known env caveat — `gsplat` CUDA JIT
+
+The active venv is symlinked to `~/code/SousVide/.venv` and pinned via
+`~/code/SousVide/uv.lock` (torch 2.1.2+cu121, numpy 1.26.4,
+gsplat 0.1.13). `gsplat`'s CUDA extension is built lazily via
+`torch.utils.cpp_extension.load()` into
+`~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`. As of 2026-05-13
+the cached `gsplat_cuda.so` loads fine and ns-viewer / `GSplatRenderer`
+work end-to-end — the previously reported
+`pybind11/cast.h:45: error: expected template-name before '<' token`
+rebuild failure is **not currently reproducible**.
+
+If a future session legitimately sees the JIT rebuild fail (real
+pybind11 error, not collateral damage from another problem), try in
+this order:
+
+1. Wipe the cache directory entirely (`rm -rf
+   ~/.cache/torch_extensions/py311_cu121/gsplat_cuda/`) so ninja
+   rebuilds from scratch. Touching individual file mtimes does NOT
+   help — ninja keys on a build-command hash, not mtimes.
+2. Surgical reinstall that leaves torch/numpy alone:
+   `uv pip install --reinstall-package gsplat --no-deps gsplat==0.1.13`.
+3. For mask / move correctness checks that don't need photorealistic
+   renders, use `paint_gaussian_mask` or `inspect_scene_plotly` — they
+   read `pipeline.model.means` directly and never enter `gsplat_cuda`.
+
+**Do NOT run `uv pip install --force-reinstall gsplat`.** gsplat's deps
+are unpinned, so a force-reinstall re-resolves against PyPI HEAD and
+cascades the entire ML stack: torch 2.1.2+cu121 → 2.12.0+cu130,
+numpy 1.26.4 → 2.4.4, nvidia CUDA libs 12.1 → 13.0. `cv2` (compiled
+against numpy 1.x) then fails to import, taking down nerfstudio before
+gsplat even gets reached. SousVide and falsify both share this venv so
+the damage is doubled. Recovery if it happens anyway:
+`cd ~/code/SousVide && uv sync` restores the lockfile state — but the
+sync also removes ad-hoc-installed packages, so reinstall
+`pyarrow` and `pytest` additively afterwards
+(`uv pip install pyarrow pytest`).
+
+Anything that needs the gsplat CUDA path (ns-viewer, `GSplatRenderer`,
+`run_vla_episode`) depends on the cached `.so` staying valid. The
+mask-authoring + applier code paths in `sim/scene_edits.py` are
+CPU-only and unaffected either way.
+
 Environment variables (see SousVide CLAUDE.md):
 - `LD_LIBRARY_PATH` includes `external/FiGS/acados/lib`
 - `ACADOS_SOURCE_DIR=external/FiGS/acados/`

@@ -1,0 +1,64 @@
+# Verification scene: move the RIGHT gate's Gaussians to the same anchor
+# (2.75, -0.25, 0) the center_gate scene uses for the left gate. Purpose
+# is to visually confirm in ns-viewer that the right_gate `include` AABB
+# (see configs/calibrations/gate_gaussian_aabbs.yaml) captures all the
+# right gate's Gaussians cleanly — i.e., the original right-gate region
+# should appear empty after the edit.
+#
+# This is intentionally a temporary scene file (leading underscore in the
+# filename); not part of the normal scene set. Delete once verified.
+#
+# All other configuration is copied from right_gate.yaml verbatim.
+
+scene_key: _check_right_gate_move
+gsplat_path: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353
+gsplat_config_yml: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353/config.yml
+gsplat_data_cwd: ../../data/gate_scenes_export/right_scene
+
+start_position_mocap: [0.0, 0.0, 1.5]
+goal_position_mocap:  [1.525, -0.615, 1.0]
+gate_position_mocap:  [2.75, -0.25, 1.5]
+
+frames:
+  - { name: mocap, notes: "Joint mocap (z-up)." }
+  - { name: ned,   notes: "perm5 of mocap (diag(1,-1,-1))." }
+  - { name: ns,    notes: "right scene nerfstudio-internal." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing optical frame." }
+  - { name: cam_downward, notes: "Downward-facing optical frame." }
+
+transforms:
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, right_gate_new, joint_mocap_to_nerf_4x4] }
+  - { src: cam_body, dst: cam_forward, type: se3_inline,
+      R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
+      t: [0.03, -0.01, 0.10] }
+  - { src: cam_body, dst: cam_downward, type: se3_inline,
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/right_gate.ply,  frame: mocap, color: [0.32, 0.55, 0.78] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/right_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Calibration in configs/calibrations/gate_gaussian_aabbs.yaml under
+# `right_gate`. Move to the same anchor as center_gate to make visual
+# comparison easy.
+scene_edits:
+  - name: move_right_gate
+    type: rigid_transform_aabb
+    target_aabb_frame: mocap
+    target_aabb_min: [-0.065, -1.547, 0.0]
+    target_aabb_max: [1.153, -0.747, 2.03]
+    exclude_aabbs: []
+    transform_frame: mocap
+    transform:
+      source_anchor: [0.544, -1.147, 0.074]
+      target_anchor: [2.75, -0.25, 0.0]
+      source_normal: [0.385, -0.923, 0.0]
+      target_normal: [0.0, -1.0, 0.0]
+    applies_to_scene_objects: [gate]

@@ -158,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     gsplat_config = _resolve(scene_cfg["gsplat_config_yml"])
     data_cwd = _resolve(scene_cfg["gsplat_data_cwd"]) if "gsplat_data_cwd" in scene_cfg else None
     print(f"[scene] loading gsplat at {gsplat_config} (cwd={data_cwd})")
+    from falsify.sim.scene_edits import load_scene_edits
     renderer = GSplatRenderer(
         gsplat_config, world_frame="ned", data_cwd=data_cwd, frame_graph=fg,
+        scene_edits=load_scene_edits(scene_cfg),
     )
 
     fwd = make_camera_sensor_from_yaml(

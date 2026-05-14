@@ -1,15 +1,20 @@
-# Example course: traverse the left gate, hovering past the table area.
-# Waypoints are in MOCAP because that's how humans think about the scene
-# (z-up, origin at the ArUco tag — see data/gate_scenes_export/README.md).
-# The spline planner converts to NED via the scene's FrameGraph.
+# Example course: traverse the left gate, hover over the stuffed animal on the table.
 #
-# Authoring workflow:
-# 1. Edit waypoints/yaw_mode below.
-# 2. Run `python -m falsify.cli.visualize_waypoints --course <this> --scene <scene>
-#    --out runs/wpviz/...` and inspect the per-frame PLYs in MeshLab.
-# 3. Once they look right, run `python -m falsify.cli.plan_trajectory --course <this>
-#    --scene <scene> --out runs/courses/...` and feed the resulting NPZ into
-#    `falsify.cli.export_training_data`.
+# Landmarks (MOCAP, extracted from objects_summary.json):
+#   start                  (0, 0, 1.5)             — given
+#   left_gate plane_mid    (0.915, 0.75, 1.5)      — midpoint of the gate posts at hover height
+#   left_gate posts        (1.18, 0.45) ↔ (0.65, 1.05)
+#   left_table center      (1.525, -0.215, 0.325)  — hover ~70cm above to image the animal
+#
+# Author + iterate workflow:
+# 1. Edit waypoints below.
+# 2. python -m falsify.cli.inspect_scene_plotly --scene configs/scenes/left_gate.yaml \
+#       --course configs/courses/through_left_gate.yaml --out runs/inspect/left_gate.html
+#    Open the HTML; confirm the spline curves cleanly between the gate posts and
+#    hovers above the table at the end.
+# 3. python -m falsify.cli.plan_trajectory --course configs/courses/through_left_gate.yaml \
+#       --scene configs/scenes/left_gate.yaml --out runs/courses/through_left_gate/trajectory.npz
+# 4. Hand the NPZ to falsify.cli.export_training_data.
 
 name: through_left_gate
 scene: configs/scenes/left_gate.yaml
@@ -17,19 +22,27 @@ frame: mocap
 fps: 10
 total_time_s: 8.0
 
-# How waypoint yaws are resolved when not explicitly set:
-#  - tangent: yaw follows the direction of motion (atan2 of position derivative)
-#  - interp : linear interpolation between waypoints that DO specify yaw
-#  - fixed  : all unspecified yaws = 0
+# yaw_mode:
+#   tangent: yaw follows direction of motion (atan2 of position derivative)
+#   interp : linearly interpolate yaws that ARE specified between waypoints
+#   fixed  : all unset yaws default to 0
 yaw_mode: tangent
 
 waypoints:
-  - { name: start,     p: [-0.5,  0.70, 1.50], yaw: 0.0, t: 0.0 }
-  - { name: pre_gate,  p: [ 0.30, 0.70, 1.50] }
-  - { name: gate,      p: [ 0.86, 0.69, 1.50] }
-  - { name: post_gate, p: [ 1.40, 0.70, 1.50] }
-  - { name: goal,      p: [ 1.50, -0.30, 1.40], t: 8.0 }
+  # Yaw notes (course frame = mocap, z-up). body_x is the drone's forward.
+  #   start  yaw=0           → body_x = +x_mocap (toward gate region)
+  #   gate   yaw=+0.724 rad  → body_x orthogonal to the gate plane in the
+  #                            flight direction (atan2 of the plane normal
+  #                            (0.749, 0.663), computed from plane posts
+  #                            (1.18, 0.45) ↔ (0.65, 1.05))
+  #   hover  yaw=0           → body_x back to +x_mocap
+  # approach + post_gate inherit yaw_mode: tangent (spline derivative).
+  - { name: start,     p: [0.00, 0.00, 1.5], yaw: 0.0, t: 0.0 }
+  - { name: approach,  p: [0.45, 0.40, 1.5] }
+  - { name: gate,      p: [0.915, 0.75, 1.5], yaw: 0.724 }
+  - { name: post_gate, p: [1.75, 1.30, 1.4] }
+  - { name: hover,     p: [1.525, -0.615, 1.0], yaw: 0.0, t: 8.0 }
 
 velocity_constraints:
-  max_speed_mps: 1.5    # (informational; spline planner ignores; MPC will honour)
+  max_speed_mps: 1.5        # informational; spline planner ignores; MPC will honour
   max_yaw_rate_rad_s: 1.0

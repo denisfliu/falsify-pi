@@ -12,12 +12,20 @@ Planners on the roadmap:
 - ``plan_splatnav``: SplatNav A* + spline through the gsplat. Stub.
 """
 
-from .waypoints import Course, Waypoint, load_course
+from .waypoints import Course, Waypoint, load_course, save_course
 from .spline import plan_spline
+from .perturbations import (
+    CourseVariant, Direction, perturb_waypoint, sample_variants,
+)
 
 __all__ = [
     "Course",
     "Waypoint",
     "load_course",
+    "save_course",
     "plan_spline",
+    "CourseVariant",
+    "Direction",
+    "perturb_waypoint",
+    "sample_variants",
 ]

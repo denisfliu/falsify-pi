@@ -46,9 +46,16 @@ chord-length between set values; missing `yaw`s resolve per `yaw_mode`.
 
 ## Public API
 
-- `load_course(path) -> Course`
+- `load_course(path) -> Course`, `save_course(course, path) -> Path`
 - `plan_spline(course, frame_graph, *, prompt="") -> Trajectory`
   (returns ``falsify.training.Trajectory``)
+- `perturb_waypoint(course, name, direction, magnitude_m) -> Course`
+  — single-shot nudge. `direction ∈ {center, up, down, left, right}`;
+  left/right are body-relative (perpendicular to local heading in xy).
+- `sample_variants(course, waypoint_name, *, modes, magnitude_range_m,
+  n_per_mode, seed) -> list[CourseVariant]` — reproducible batch
+  generator. Used by the `falsify-perturb-course` skill to author
+  corrective-maneuver datasets.
 
 ## Yaw frame handling
 

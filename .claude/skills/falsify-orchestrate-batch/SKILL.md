@@ -102,8 +102,12 @@ LeRobot's combine helpers.
 
 ## Hands off to
 
-- Downstream training in DroneVLA2.0 — concatenate the per-episode
-  parquets the same way the existing dataset builder does.
+- **`falsify-combine-datasets`** — stitch the per-episode parquets into
+  a single LeRobot v2.1 dataset (regenerated meta, renumbered indices,
+  optional bad-last filtering, per-range task assignment). This is
+  almost always the next step before training.
+- Downstream training in DroneVLA2.0 — point the trainer at the combined
+  dataset.
 
 ## Gotchas
 

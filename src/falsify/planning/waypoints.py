@@ -166,6 +166,46 @@ class Course:
         raise ValueError(f"unknown yaw_mode {self.yaw_mode!r}")
 
 
+def save_course(course: Course, path: str | Path) -> Path:
+    """Write a Course back out as YAML.
+
+    Format mirrors ``load_course``'s input schema. Optional fields are
+    only emitted when set, so a saved-then-loaded course is structurally
+    equivalent to the original.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cfg: dict = {
+        "name": course.name,
+        "frame": course.frame,
+        "fps": int(course.fps),
+        "total_time_s": float(course.total_time_s),
+        "yaw_mode": course.yaw_mode,
+    }
+    if course.scene_path is not None:
+        cfg["scene"] = str(course.scene_path)
+    if course.notes:
+        cfg["notes"] = course.notes
+    wps: list[dict] = []
+    for wp in course.waypoints:
+        entry: dict = {"name": wp.name, "p": [float(x) for x in wp.p.tolist()]}
+        if wp.yaw is not None:
+            entry["yaw"] = float(wp.yaw)
+        if wp.t is not None:
+            entry["t"] = float(wp.t)
+        wps.append(entry)
+    cfg["waypoints"] = wps
+    vel: dict = {}
+    if course.max_speed_mps is not None:
+        vel["max_speed_mps"] = float(course.max_speed_mps)
+    if course.max_yaw_rate_rad_s is not None:
+        vel["max_yaw_rate_rad_s"] = float(course.max_yaw_rate_rad_s)
+    if vel:
+        cfg["velocity_constraints"] = vel
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    return path
+
+
 def load_course(path: str | Path) -> Course:
     """Parse a course YAML into a :class:`Course`."""
     path = Path(path)

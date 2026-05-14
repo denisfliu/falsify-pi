@@ -34,6 +34,9 @@ import numpy as np
 from falsify.geometry import PointCloud
 from falsify.io import build_frame_graph, load_yaml
 from falsify.planning import load_course, plan_spline
+from falsify.sim.scene_edits import (
+    apply_edits_to_scene_object, load_scene_edits,
+)
 from falsify.visualization import (
     read_ply, stack_pointclouds, subsample,
     trajectory_to_pointcloud, write_ply,
@@ -70,12 +73,17 @@ def _waypoint_markers_pc(course, fg, *, dst_frame: str) -> PointCloud:
 
 
 def _scene_object_clouds(scene_cfg, scene_dir, fg, max_points: int = 8000):
+    edits = load_scene_edits(scene_cfg)
     objects = []
     for entry in scene_cfg.get("scene_objects", []):
         ply_path = Path(entry["ply"])
         if not ply_path.is_absolute():
             ply_path = (scene_dir / ply_path).resolve()
         cloud = read_ply(ply_path, fg.frame(entry["frame"]))
+        if edits:
+            from falsify.geometry import PointCloud
+            new_pts = apply_edits_to_scene_object(entry["name"], cloud.points, edits, fg)
+            cloud = PointCloud(points=new_pts, frame=cloud.frame, colors=cloud.colors)
         color = tuple(entry.get("color", (0.5, 0.5, 0.5)))
         objects.append((entry["name"], cloud, color))
     return objects

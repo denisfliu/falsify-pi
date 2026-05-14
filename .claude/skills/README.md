@@ -34,7 +34,8 @@ in `.claude/skills/`. The skills speak a single canonical type
 
 | You want to … | Skill | Status |
 |---|---|---|
-| **Author** a waypoint course and visualize it in the scene | `falsify-author-waypoints` | done |
+| **Author** a waypoint course and visualize it in the scene (plotly + PLYs) | `falsify-author-waypoints` | done |
+| Generate corrective-maneuver variants by perturbing a waypoint | `falsify-perturb-course` | done |
 | Plan a Trajectory NPZ from a waypoint course (cubic spline) | `falsify-trajectory-from-waypoints` | done |
 | Run the VLA against a scene, save a trajectory | `falsify-trajectory-from-vla` | done |
 | Re-derive the trajectory of a previous VLA run (no re-inference) | `falsify-trajectory-from-replay` | done |
@@ -44,7 +45,9 @@ in `.claude/skills/`. The skills speak a single canonical type
 | Inject perturbations / failures on an existing trajectory | `falsify-falsify-trajectory` | **stub** |
 | Turn a trajectory + scene into one training parquet | `falsify-export-parquet` | done |
 | Generate many parquets across scenes / sources | `falsify-orchestrate-batch` | done |
+| Combine multiple LeRobot dataset directories into one (drop bad-last, reassign tasks) | `falsify-combine-datasets` | done |
 | Gray renders, wrong-direction camera, missing gaussians, JIT failure | `falsify-debug-render` | done |
+| Tune `scene_edits` AABBs interactively (find stranded / uncaught Gaussians) | `falsify-author-gaussian-mask` | done |
 
 **Stub** = the skill describes the intended interface but the underlying
 code isn't there yet. The body of each stub points to the TODO list.
@@ -74,7 +77,41 @@ falsify-export-parquet                # render + emit one episode parquet
 
 Only the first step needs human judgment; the other two are one CLI each.
 
-### C. "Bulk-generate training data across both gate scenes"
+### C. "Corrective-maneuver variants from one base course"
+
+```
+falsify-author-waypoints              # nominal course (one-time authoring)
+            │
+            ▼  configs/courses/<base>.yaml
+falsify-perturb-course                # 5 directions × N samples → 5N course YAMLs
+            │
+            ▼  configs/courses/<base>_variants/*.yaml
+falsify-trajectory-from-waypoints     # plan each (millisec each)
+falsify-export-parquet                # render each (reuses one renderer)
+```
+
+Each variant becomes one episode; the resulting dataset contains both
+nominal and recovery demonstrations.
+
+### D. "Combine multiple LeRobot datasets into one"
+
+```
+many LeRobot bundles in a parent dir
+            │
+            ▼
+falsify-combine-datasets             # bad-last drop, task assignment,
+                                     # global renumbering, meta regen
+            │
+            ▼
+single dataset/  (info.json + tasks.jsonl + episodes.jsonl +
+                  episodes_stats.jsonl + data/chunk-000/episode_*.parquet)
+```
+
+Schema-identical to DroneVLA2.0's `episode_000008.parquet`. Use after
+collecting many real-world bundles, or after `falsify-orchestrate-batch`
+when you want one dataset instead of many directories.
+
+### E. "Bulk-generate training data across both gate scenes"
 
 ```
 many invocations of any

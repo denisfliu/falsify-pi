@@ -1,0 +1,87 @@
+# center_gate — a perturbation of left_gate where the gate's Gaussians are
+# moved to be centered over the anchor (2.5, -0.25, 0) in MOCAP, with the
+# mocap y-axis orthogonal to the gate plane (drone passes through in y).
+#
+# The trained gsplat checkpoint is unchanged — the edit is applied at
+# load time by mutating `pipeline.model.means` / `.quats` in place. See
+# src/falsify/sim/scene_edits.py for the mechanics.
+#
+# Frame layout is identical to left_gate (mocap, ned, ns, cam_*); the
+# only difference is the additional `scene_edits` block at the bottom.
+
+scene_key: center_gate
+gsplat_path: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901
+gsplat_config_yml: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901/config.yml
+gsplat_data_cwd: ../../data/gate_scenes_export/left_scene
+
+# Mission placeholders — overwritten by the course YAML for the center_gate
+# task. Kept here so the existing orchestrator paths don't crash.
+start_position_mocap: [0.0, 0.0, 1.5]
+goal_position_mocap:  [1.525, -0.615, 1.0]
+gate_position_mocap:  [2.5, -0.25, 1.5]
+
+frames:
+  - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag, +x along tag printed +y)." }
+  - { name: ned,   notes: "FiGS dynamics frame; perm5 of mocap (diag(1,-1,-1))." }
+  - { name: ns,    notes: "Nerfstudio-internal (dataparser-transformed, scaled)." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing camera optical frame." }
+  - { name: cam_downward, notes: "Downward-facing camera optical frame." }
+
+transforms:
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, left_gate_new, joint_mocap_to_nerf_4x4] }
+  - { src: cam_body, dst: cam_forward, type: se3_inline,
+      R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
+      t: [0.03, -0.01, 0.10] }
+  - { src: cam_body, dst: cam_downward, type: se3_inline,
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/left_gate.ply,  frame: mocap, color: [0.72, 0.32, 0.32] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/left_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Move the gate Gaussians (and the gate PLY in the inspector view) so the
+# gate sits centered over (2.5, -0.25, 0) with mocap +y as its plane normal.
+#
+# Source pose comes from data/gate_scenes_export/objects_final/objects_summary.json
+# for the left_gate object:
+#   center xy ≈ (0.861, 0.694); AABB-floor z ≈ 0.075
+#   plane posts (1.18, 0.45) ↔ (0.65, 1.05) → plane normal (0.749, 0.663, 0)
+#
+# Target pose: anchor (2.5, -0.25, 0), plane normal (0, -1, 0). The drone
+# starts at (0, 0, 1.5) and approaches the gate from +y → -y, so the gate
+# faces +y (its normal points toward the approaching drone).
+scene_edits:
+  - name: move_gate
+    type: rigid_transform_aabb
+    target_aabb_frame: mocap
+    # AABB widened by ~0.15 m in xy beyond the objects_summary tight box so
+    # we catch the gate's "fuzzy" outer Gaussians that the original AABB
+    # missed (visible as stragglers in ns-viewer after the first attempt).
+    target_aabb_min: [0.36, 0.12, 0.05]
+    target_aabb_max: [1.36, 1.27, 2.05]
+    # Extra inclusion strips painted in `falsify.cli.paint_gaussian_mask`
+    # to grab Gaussians the main AABB missed (the gate's L-foot at the
+    # base of the +x gate post — narrow region between the post and the
+    # table corner, the exclusion was eating the bottom of the post).
+    include_aabbs:
+      - { min: [1.175, 0.246, 0.054], max: [1.219, 0.319, 0.689] }
+    # The widened AABB now overlaps the table at its lower-z, +x corner;
+    # exclude the table outright so its Gaussians stay put. (The table's
+    # AABB is from objects_summary.json:left_table; loosen the upper z a
+    # bit so we definitely cover the table top.)
+    exclude_aabbs:
+      - { min: [1.20, -0.85, 0.02], max: [1.85, 0.40, 0.62] }
+    transform_frame: mocap
+    transform:
+      source_anchor: [0.861, 0.694, 0.075]
+      target_anchor: [2.75, -0.25, 0.0]            # nudged from 2.5 → 2.75
+      source_normal: [0.749, 0.663, 0.0]
+      target_normal: [0.0, -1.0, 0.0]
+    applies_to_scene_objects: [gate]

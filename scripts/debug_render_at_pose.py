@@ -64,8 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[scene] gsplat = {gsplat_config}")
     print(f"[scene] cwd    = {data_cwd}")
 
+    from falsify.sim.scene_edits import load_scene_edits
     renderer = GSplatRenderer(
         gsplat_config, world_frame="ned", data_cwd=data_cwd, frame_graph=fg,
+        scene_edits=load_scene_edits(scene_cfg),
     )
     Tw2g = np.asarray(renderer._impl.Tw2g)
     print("\nFiGS Tw2g (NED → NS):")

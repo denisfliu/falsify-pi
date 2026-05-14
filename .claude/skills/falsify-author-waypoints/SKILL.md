@@ -41,7 +41,43 @@ Open the YAML and edit:
 - `waypoints`: 3D positions in MOCAP (z-up, origin at the ArUco tag).
   Optional `yaw` and `t` per waypoint.
 
-### 2. Visualize against the scene
+### 2a. Pick landmarks interactively (plotly inspector — start here)
+
+The fastest way to find good waypoints is the plotly inspector. It
+renders the scene's gate + table point clouds in 3D, overlays the gate's
+AABB wireframe and plane-cut (the geometric "opening" between the two
+gate posts), and prints the key MOCAP coordinates straight to your
+terminal.
+
+```bash
+PYTHONPATH=src .venv/bin/python -m falsify.cli.inspect_scene_plotly \
+    --scene configs/scenes/<scene>.yaml \
+    --start "[0, 0, 1.5]" \
+    --out runs/inspect/<scene>.html
+# add --open-browser if you want it to pop open
+```
+
+The terminal output prints:
+- `<gate>_center`, `<gate>_aabb` — where the gate is
+- `<gate>_plane_posts` — the two posts (2D x,y)
+- `<gate>_plane_mid` — midpoint at z=1.5 (your "fly through the gate" waypoint)
+- `<table>_center` — where the stuffed animal lives (the table top)
+
+Open the HTML in a browser; rotate, zoom, hover over any point to read
+its MOCAP coordinates. Copy the values you want into the YAML.
+
+### 2b. Visualize the spline through your chosen waypoints
+
+Once you have a draft course, overlay the planned spline:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m falsify.cli.inspect_scene_plotly \
+    --scene configs/scenes/<scene>.yaml \
+    --course configs/courses/<my_course>.yaml \
+    --out runs/inspect/<scene>.html
+```
+
+Or the offline PLY equivalent (useful if you prefer MeshLab):
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m falsify.cli.visualize_waypoints \
@@ -51,19 +87,9 @@ PYTHONPATH=src .venv/bin/python -m falsify.cli.visualize_waypoints \
     --plan
 ```
 
-This writes, for each of `mocap`, `ned`, `ns`:
-
-```
-combined_<frame>.ply   — waypoints (colored markers) + planned spline
-                         (yellow line) + scene objects (gate, table)
-waypoints_<frame>.ply  — just the markers
-spline_<frame>.ply     — just the planned spline (requires --plan)
-```
-
-**Open `combined_mocap.ply` in MeshLab / open3d / blender** and check:
+Either tool, check:
 - Waypoints are *outside* solid objects (gate posts, table).
-- Endpoint colors are right: start = green, goal = yellow, interior = blue.
-- The yellow spline curves *between* the gates rather than through a post.
+- The yellow spline curves *between* the gate posts rather than through one.
 - The whole spline stays inside the gsplat's training extent (no waypoints
   in the corners of the room — there are no gaussians there).
 

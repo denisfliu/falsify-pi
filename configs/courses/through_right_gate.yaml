@@ -1,0 +1,27 @@
+# Example course for the right_gate scene.
+#
+# Landmarks (MOCAP):
+#   start                   (0, 0, 1.5)             — given
+#   right_gate plane_mid    (0.29, -1.315, 1.5)
+#   right_gate posts        (0.47, -1.24) ↔ (0.11, -1.39)
+#   right_table center      (1.599, -0.234, 0.312)
+#
+# Same authoring loop as through_left_gate.yaml — see that file for details.
+
+name: through_right_gate
+scene: configs/scenes/right_gate.yaml
+frame: mocap
+fps: 10
+total_time_s: 8.0
+yaw_mode: tangent
+
+waypoints:
+  - { name: start,     p: [ 0.00,  0.00, 1.5], yaw: 0.0, t: 0.0 }
+  - { name: approach,  p: [ 0.15, -0.65, 1.5] }
+  - { name: gate,      p: [ 0.495, -1.21, 1.5] }       # true gate center per visual inspection
+  - { name: post_gate, p: [ 0.70, -1.50, 1.4] }
+  - { name: hover,     p: [ 1.525, -0.615, 1.0], yaw: 0.0, t: 8.0 } # shared goal across both gate scenes
+
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0

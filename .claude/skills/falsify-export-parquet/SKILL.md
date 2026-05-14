@@ -65,9 +65,10 @@ loaders open it directly.
 ## Hands off to
 
 - **`falsify-orchestrate-batch`** — to produce hundreds of episodes at once.
+- **`falsify-combine-datasets`** — to merge many per-episode outputs (or
+  multiple bundles) into one LeRobot v2.1 dataset with regenerated meta.
 - Downstream training in DroneVLA2.0 (out of scope here): point at the
-  generated parquet(s) the same way it points at `episode_*.parquet`
-  files today.
+  combined dataset.
 
 ## Embodiments and channel order
 
