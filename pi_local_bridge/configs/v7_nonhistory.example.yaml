@@ -1,0 +1,45 @@
+# Bridge config — dronevla v7 gate-scenes, pi07 NONHISTORY mode
+# (gemma3_vla_with_states + NONHISTORY_LC).
+
+listen:
+  host: 0.0.0.0
+  port: 8766
+  ws_path: /v1/models/v7-nonhistory
+
+auth:
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+policy:
+  # Source: gs://dronevla-raw-data/model_checkpoints/2026_may17/mar16_nonhistory_ft_dronevla_v7_gate_scenes_may16_311am/ccvhs1do/20000/model_bfloat16/
+  ckpt_path: /scratch/checkpoints/dronevla_v7/ccvhs1do/20000/model_bfloat16
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_fixed_noise
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  # Nonhistory variant — single-frame state. Bridge patches
+  # `_resolve_image_key` to accept the server-side names directly.
+  sequence_length: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+spec_overrides:
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear

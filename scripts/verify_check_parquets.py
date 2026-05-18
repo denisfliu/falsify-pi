@@ -28,11 +28,7 @@ from PIL import Image
 REPO = Path(__file__).resolve().parent.parent
 REFERENCE = REPO / "data/gate_scenes_real_combined/data/chunk-000/episode_000098.parquet"
 DUMP_ROOT = REPO / "runs/check_image_dumps"
-DATASETS = [
-    REPO / "runs/datasets/left_gate_check",
-    REPO / "runs/datasets/right_gate_check",
-    REPO / "runs/datasets/center_gate_check",
-]
+DATASETS = sorted((REPO / "runs/datasets").glob("synth_*"))
 
 OK = "✓"
 BAD = "✗"
@@ -124,23 +120,24 @@ def check_one(path: Path, ref_schema, dump_dir: Path) -> tuple[bool, list[str]]:
                 k = int(np.argmin(per_frame_std))
                 bad_imgs.append(f"{col} frame {k} near-constant (std={per_frame_std[k]:.3f})")
 
-        # Write an animated GIF instead of one PNG per frame. 100 ms/frame
-        # matches the 10 Hz cadence baked into the parquets. `dump_all` columns
-        # animate every frame; the 3pov column dumps a 2-frame GIF (first+last)
-        # since by contract it's all-zero and we only need a sanity skim.
-        if dump_all:
-            frames = [Image.fromarray(a) for a in arrs]
-        else:
-            frames = [Image.fromarray(arrs[0]), Image.fromarray(arrs[-1])] if len(arrs) >= 2 \
-                     else [Image.fromarray(arrs[0])]
-        if len(frames) > 1:
-            frames[0].save(
-                dump_dir / f"{label}.gif",
-                save_all=True, append_images=frames[1:],
-                duration=100, loop=0, optimize=False, disposal=2,
-            )
-        else:
-            frames[0].save(dump_dir / f"{label}.gif")
+        # GIF dumping skipped for the 200-episode synth run (would produce
+        # 600 GIFs × ~250 frames each — too much disk). Re-enable per-episode
+        # by setting a SKIP_GIFS=0 env var if needed.
+        import os
+        if os.environ.get("SKIP_GIFS", "1") != "1":
+            if dump_all:
+                frames = [Image.fromarray(a) for a in arrs]
+            else:
+                frames = [Image.fromarray(arrs[0]), Image.fromarray(arrs[-1])] \
+                         if len(arrs) >= 2 else [Image.fromarray(arrs[0])]
+            if len(frames) > 1:
+                frames[0].save(
+                    dump_dir / f"{label}.gif",
+                    save_all=True, append_images=frames[1:],
+                    duration=100, loop=0, optimize=False, disposal=2,
+                )
+            else:
+                frames[0].save(dump_dir / f"{label}.gif")
     if bad_imgs:
         failures.append("image issues: " + "; ".join(bad_imgs))
 

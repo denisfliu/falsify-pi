@@ -209,7 +209,12 @@ class Simulator:
         n = len(chunk)
         if n == 0:
             return _advance_dt(state, dt)
-        idx = min(offset, n - 1)
+        # chunk[0] is "now" (the state the policy was queried from); chunk[1]
+        # is the first post-action pose. Advancing one sim tick should
+        # consume one action delta, so offset 0 maps to chunk[1], offset 1
+        # to chunk[2], etc. Clamping at n-1 prevents going past the last
+        # waypoint when the chunk is shorter than chunk_steps.
+        idx = min(offset + 1, n - 1)
         new_pos = Point(chunk.positions[idx], frame=chunk.frame)
         new_vel = chunk.velocities[idx] if chunk.velocities is not None else np.zeros(3)
         if chunk.quaternions is not None:

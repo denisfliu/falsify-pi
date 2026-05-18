@@ -28,6 +28,9 @@ _NAME_TO_TYPE = {
     "velocity": FailureType.EXCESSIVE_VELOCITY,
     "tilt": FailureType.EXCESSIVE_TILT,
     "proximity": FailureType.PROXIMITY_COLLISION,
+    "collision_gate": FailureType.COLLISION_GATE,
+    "collision_other": FailureType.COLLISION_OTHER,
+    "miss_gate": FailureType.MISS_GATE,
 }
 
 
@@ -55,6 +58,8 @@ class FailureDetector:
         self._last_safe_state = None
         self._last_safe_step = -1
         self._fired = None
+        for crit in self._criteria:
+            crit.reset()
 
     def update(self, state: DroneState, step: int) -> Optional[FailureRecord]:
         """Vote on `state`. On first failure, build the `FailureRecord` and
@@ -68,18 +73,25 @@ class FailureDetector:
         for crit in self._criteria:
             violation = crit.check_with_graph(state, self._graph)
             if violation is not None:
+                ftype = (
+                    violation.failure_type
+                    if violation.failure_type is not None
+                    else _NAME_TO_TYPE.get(crit.name, FailureType.CUSTOM)
+                )
+                extra = {
+                    "value": violation.value,
+                    "threshold": violation.threshold,
+                }
+                extra.update(violation.extra)
                 rec = FailureRecord(
-                    failure_type=_NAME_TO_TYPE.get(crit.name, FailureType.CUSTOM),
+                    failure_type=ftype,
                     description=violation.description,
                     failure_step=step,
                     failure_state=state,
                     last_safe_step=self._last_safe_step,
                     last_safe_state=self._last_safe_state if self._last_safe_state is not None else state,
                     criterion_name=crit.name,
-                    extra={
-                        "value": violation.value,
-                        "threshold": violation.threshold,
-                    },
+                    extra=extra,
                 )
                 self._fired = rec
                 return rec

@@ -1,8 +1,13 @@
 # `falsify.cli/` — entry points
 
-- `smoke_test.py` — single-episode runner against `configs/falsification/smoke.yaml`.
+- `smoke_test.py` — single-episode runner against `configs/falsification/*.yaml`.
   Supports `--stub-recovery` for env-less runs. Uses mock policies; never
-  touches CUDA or the OpenPI server.
+  touches CUDA or the OpenPI server. Three shipped configs:
+  `smoke.yaml` (bare end-to-end), `smoke_recovery.yaml` (tight bounds +
+  recovery hook), and `smoke_collision.yaml` (drone-OBB collision against
+  scene-object PLYs + gate-aperture miss-gate check). The detector
+  factory closes over `scene_cfg` so the collision criterion can load
+  `scene_objects:` PLYs into labeled NED clouds at build time.
 - `visualize_frames.py` — load a scene YAML, dump a deterministic helix
   trajectory + the scene's object PLYs (from `scene_objects:` in the YAML) in
   every configured frame. Runs a numerical round-trip check before writing.
@@ -60,7 +65,12 @@
   `--out`: `frames/combined_<frame>.ply` (trajectory + scene clouds),
   `flythrough.mp4` (forward-camera renders along the flown path), and
   `vla_io/query_*` (per-query VLA inputs/outputs). Use `--skip-handshake`
-  for renderer-only smoke runs.
+  for renderer-only smoke runs. **Note:** this CLI currently dispatches
+  to `VLAPolicy` (openpi protocol). The newer `PiGatewayPolicy`
+  (pi-inference-client gateway, see top-level `CLAUDE.md` and
+  `pi_local_bridge/`) is not yet wired into this CLI — the policy class
+  is available but smoke_test/run_vla_episode dispatchers still need a
+  `type: pi_gateway` branch.
 - `run_falsification.py` (future) — full campaign driver.
 
 ## Running with the SousVide venv

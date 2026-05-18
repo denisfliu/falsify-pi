@@ -48,10 +48,17 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 
-def _smoke_imports() -> None:
-    print("[smoke] importing openpi_client …", end=" ", flush=True)
-    import openpi_client  # noqa: F401
-    print("ok")
+def _smoke_imports(policy_backend: str = "openpi") -> None:
+    if policy_backend == "openpi":
+        print("[smoke] importing openpi_client …", end=" ", flush=True)
+        import openpi_client  # noqa: F401
+        print("ok")
+    elif policy_backend == "pi_gateway":
+        print("[smoke] importing pi_inference_client …", end=" ", flush=True)
+        import pi_inference_client  # noqa: F401
+        print("ok")
+    else:
+        raise ValueError(f"unknown policy_backend {policy_backend!r}")
     print("[smoke] importing figs            …", end=" ", flush=True)
     import figs  # noqa: F401
     print("ok")
@@ -205,12 +212,28 @@ def main(argv: list[str] | None = None) -> int:
                         help="Render every Nth state for the flythrough mp4.")
     parser.add_argument("--flythrough-fps", type=int, default=10)
     parser.add_argument("--skip-handshake", action="store_true",
-                        help="Skip the moraband websocket handshake (useful when "
-                             "smoke-testing the renderer offline).")
+                        help="Skip the policy-server websocket handshake (useful "
+                             "when smoke-testing the renderer offline).")
+    parser.add_argument("--policy-config", type=Path, default=None,
+                        help="Path to a policy YAML (e.g. configs/policies/pi_gateway/*.yaml). "
+                             "When set, dispatches to that policy's type "
+                             "(e.g. `pi_gateway`) instead of constructing a "
+                             "`VLAPolicy` from --host/--port/--image-size. Ignores "
+                             "those flags. Skips the openpi smoke handshake.")
+    parser.add_argument("--safety", type=Path, default=None,
+                        help="Optional safety YAML (same shape as the `safety:` "
+                             "block in configs/falsification/smoke_collision.yaml). "
+                             "When set, wires a FailureDetector that stops the "
+                             "rollout on bounds / velocity / tilt / collision / "
+                             "miss-gate. Without it, the rollout runs to "
+                             "--horizon-s regardless.")
     args = parser.parse_args(argv)
 
-    _smoke_imports()
-    if not args.skip_handshake:
+    # Decide policy backend up-front so smoke checks load the right deps.
+    use_pi_gateway = args.policy_config is not None
+    backend = "pi_gateway" if use_pi_gateway else "openpi"
+    _smoke_imports(policy_backend=backend)
+    if not args.skip_handshake and not use_pi_gateway:
         _smoke_websocket(args.host, args.port)
 
     out_dir = args.out
@@ -240,41 +263,98 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- VLA-driven episode -------------------------------------------
     record_dir = out_dir / "vla_io"
-    built_policies: list[VLAPolicy] = []
+    built_policies: list = []
 
-    def policy_factory(goal_ned, _policy_cfg):
-        cfg = VLAPolicyConfig(
-            host=args.host, port=args.port, prompt=args.prompt,
-            hz=args.hz, actions_per_chunk=args.actions_per_chunk,
-            image_size=args.image_size,
-            forward_camera="forward", downward_camera="downward",
-            server_frame="mocap",
+    if use_pi_gateway:
+        from falsify.policy import PiGatewayConfig, PiGatewayPolicy
+        policy_cfg = load_yaml(args.policy_config)
+        if policy_cfg.get("type") != "pi_gateway":
+            raise ValueError(
+                f"--policy-config expects type: pi_gateway, got {policy_cfg.get('type')!r}"
+            )
+        pgcfg = PiGatewayConfig(
+            gateway_url=policy_cfg["gateway_url"],
+            api_key=policy_cfg.get("api_key", ""),
+            execute_chunk_size=int(policy_cfg.get("execute_chunk_size", 25)),
+            prompt=policy_cfg.get("prompt", args.prompt),
+            hz=int(policy_cfg.get("hz", args.hz)),
+            state_dim=int(policy_cfg.get("state_dim", 7)),
+            action_dim=int(policy_cfg.get("action_dim", 7)),
+            action_pos_slice=tuple(policy_cfg.get("action_pos_slice", (0, 3))),
+            action_yaw_index=policy_cfg.get("action_yaw_index", 3),
+            camera_map=dict(policy_cfg.get("camera_map") or {}),
+            state_key=policy_cfg.get("state_key", "observation/state"),
+            server_frame=policy_cfg.get("server_frame", "mocap"),
+            use_rtc=bool(policy_cfg.get("use_rtc", False)),
+            traceability=dict(policy_cfg.get("traceability") or {}),
             record_dir=record_dir,
         )
-        # The orchestrator constructs the FrameGraph; we re-build it here
-        # purely to pass into VLAPolicy. Cheap (no I/O on the hot path).
-        fg = build_frame_graph(scene_cfg, base_path=scene_dir)
-        pol = VLAPolicy(cfg, fg)
-        built_policies.append(pol)
-        return pol
 
+        def policy_factory(goal_ned, _policy_cfg):
+            fg2 = build_frame_graph(scene_cfg, base_path=scene_dir)
+            pol = PiGatewayPolicy(pgcfg, fg2)
+            built_policies.append(pol)
+            return pol
+    else:
+        def policy_factory(goal_ned, _policy_cfg):
+            cfg = VLAPolicyConfig(
+                host=args.host, port=args.port, prompt=args.prompt,
+                hz=args.hz, actions_per_chunk=args.actions_per_chunk,
+                image_size=args.image_size,
+                forward_camera="forward", downward_camera="downward",
+                server_frame="mocap",
+                record_dir=record_dir,
+            )
+            # The orchestrator constructs the FrameGraph; we re-build it here
+            # purely to pass into VLAPolicy. Cheap (no I/O on the hot path).
+            fg2 = build_frame_graph(scene_cfg, base_path=scene_dir)
+            pol = VLAPolicy(cfg, fg2)
+            built_policies.append(pol)
+            return pol
+
+    # pi_gateway draws hz / chunk size from its YAML; openpi uses CLI flags.
+    # When use_rtc is set, the runner emits one action per call regardless of
+    # execute_chunk_size, so the orchestrator must advance physics one step
+    # between policy queries.
+    if use_pi_gateway:
+        effective_hz = pgcfg.hz
+        effective_chunk = 1 if pgcfg.use_rtc else pgcfg.execute_chunk_size
+    else:
+        effective_hz = args.hz
+        effective_chunk = args.actions_per_chunk
     episode_cfg = {
-        "hz": args.hz,
+        "hz": effective_hz,
         "horizon_s": args.horizon_s,
-        "chunk_steps": args.actions_per_chunk,
+        "chunk_steps": effective_chunk,
     }
     ec = EpisodeConfig(
         scene_cfg=scene_cfg, frame_cfg=frame_cfg,
         episode_cfg=episode_cfg, scene_cfg_dir=scene_dir,
     )
 
-    print(f"[run] rolling out for {args.horizon_s}s @ {args.hz}Hz, "
-          f"chunks of {args.actions_per_chunk} steps")
+    # Wire the safety detector if a YAML was supplied. We borrow the helper
+    # from smoke_test rather than duplicating it — both CLIs need the same
+    # bounds/velocity/tilt/collision/miss-gate criteria.
+    detector_factory = None
+    if args.safety is not None:
+        from falsify.cli.smoke_test import _build_detector_factory
+        safety_cfg = load_yaml(args.safety)
+        ec.episode_cfg["safety"] = safety_cfg
+        detector_factory = _build_detector_factory(scene_cfg, scene_dir)
+        print(f"[run] safety: detector wired from {args.safety} "
+              f"(criteria=bounds+velocity+tilt"
+              f"{'+collision' if safety_cfg.get('collision', {}).get('enabled') else ''}"
+              f"{'+miss_gate' if safety_cfg.get('miss_gate') else ''})")
+
+    print(f"[run] rolling out for up to {args.horizon_s}s @ {effective_hz}Hz, "
+          f"chunks of {effective_chunk} steps "
+          f"(backend={'pi_gateway' if use_pi_gateway else 'openpi'})")
     t0 = time.time()
     episode = run_episode(
         ec,
         policy_factory=policy_factory,
         renderer=renderer.render,
+        detector_factory=detector_factory,
     )
     print(f"[run] rollout finished in {time.time() - t0:.1f}s "
           f"({len(episode.trace.states)} states)")
@@ -306,10 +386,13 @@ def main(argv: list[str] | None = None) -> int:
         "prompt": args.prompt,
         "host": args.host,
         "port": args.port,
-        "hz": args.hz,
-        "actions_per_chunk": args.actions_per_chunk,
+        "hz": effective_hz,
+        "actions_per_chunk": effective_chunk,
         "horizon_s": args.horizon_s,
         "image_size": args.image_size,
+        "policy_backend": "pi_gateway" if use_pi_gateway else "openpi",
+        "policy_config": str(args.policy_config) if use_pi_gateway else None,
+        "policy_traceability": pgcfg.traceability if use_pi_gateway else None,
         "n_states": len(episode.trace.states),
         "n_chunks": len(episode.trace.policy_outputs),
         "failure": (None if episode.failure is None

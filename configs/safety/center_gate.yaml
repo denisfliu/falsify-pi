@@ -1,0 +1,30 @@
+# Safety criteria for a center_gate VLA rollout.
+#
+# Stop conditions:
+#   - drone leaves the working volume (BoundsCriterion, mocap-frame box)
+#   - velocity > 10 m/s   (VelocityCriterion)
+#   - tilt   > 1.2 rad    (TiltCriterion, ≈ 69°)
+#   - OBB intersects the gate or table point cloud (PointCloudCollisionCriterion)
+#
+# miss_gate is intentionally NOT wired here yet — the aperture corners
+# for the *center* gate need to be derived from the `scene_edits`
+# transform in configs/scenes/center_gate.yaml (the gate Gaussians get
+# rotated + translated from the original left_gate aperture). Until that
+# is computed, omitting miss_gate is the safe default — the collision
+# criterion still catches the obvious failure mode (clipping the gate
+# posts).
+
+bounds_frame: mocap
+bounds_lower: [-1.0, -3.0, 0.2]
+bounds_upper: [ 4.0,  3.0, 3.0]
+max_speed: 10.0
+max_tilt_rad: 1.2
+
+# ~quadcopter footprint — 35×35×15 cm (half-extents in body FRD).
+drone_body:
+  half_extents: [0.175, 0.175, 0.075]
+
+collision:
+  enabled: true
+  gate_objects:  [gate]    # PLY name from configs/scenes/center_gate.yaml::scene_objects
+  other_objects: [table]

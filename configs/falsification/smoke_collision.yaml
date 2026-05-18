@@ -1,0 +1,51 @@
+# Smoke-test variant exercising the new collision + miss-gate criteria.
+#
+# Drone is approximated as a rectangular prism in body (FRD) frame; the
+# criterion tests the OBB for inclusion of the scene_objects' point
+# clouds, classifying each hit as gate-vs-other. The miss-gate criterion
+# fires when the drone crosses the aperture plane outside the rectangle
+# defined by ``corners`` (mocap frame, derived from the left-gate
+# calibration in configs/calibrations/gate_gaussian_aabbs.yaml).
+
+scene: configs/scenes/left_gate.yaml
+frame: configs/frames/carl_dual.yaml
+policy: configs/policies/mock_noisy.yaml
+
+hz: 10
+policy_hz: 1
+horizon_s: 8.0
+
+safety:
+  # Wide bounds in MOCAP (z-up) — we want the collision / miss-gate
+  # criteria to fire first, not the bounds check on the scene's start
+  # at mocap z=1.5.
+  bounds_frame: mocap
+  bounds_lower: [-3.0, -3.0, 0.0]
+  bounds_upper: [ 3.0,  3.0, 3.0]
+  max_speed: 10.0
+  max_tilt_rad: 1.2
+
+  # ~quadcopter footprint — 35×35×15 cm (half-extents in body FRD).
+  drone_body:
+    half_extents: [0.175, 0.175, 0.075]
+
+  collision:
+    enabled: true
+    gate_objects: [gate]    # PLYs labelled this name → COLLISION_GATE
+    other_objects: [table]  # everything else listed → COLLISION_OTHER
+
+  # Left gate aperture corners in MOCAP. Posts at (0.65, 1.05) and
+  # (1.18, 0.45) (xy); aperture height ~[0.20, 1.95] m. The four corners
+  # trace the rectangle so corners[1]-corners[0] (the "u" edge) goes from
+  # post-A to post-B at low z, and corners[3]-corners[0] (the "v" edge)
+  # is the vertical span at post-A.
+  miss_gate:
+    corners_frame: mocap
+    corners:
+      - [0.65, 1.05, 0.20]   # post-A, bottom
+      - [1.18, 0.45, 0.20]   # post-B, bottom
+      - [1.18, 0.45, 1.95]   # post-B, top
+      - [0.65, 1.05, 1.95]   # post-A, top
+    margin_m: 0.0
+
+output_dir: runs

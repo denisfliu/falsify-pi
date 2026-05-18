@@ -1,0 +1,66 @@
+# Pi inference-client gateway — pi07 HISTORY mode (gemma3_vla_history + HISTORY_LC)
+# finetuned from the 170k history-mode pretrain on dronevla v7 gate-scenes.
+# Best offline MSE (~3x lower than the nonhistory variant).
+#
+# Two ways to point this at a running policy:
+#
+#   1. Self-hosted: a `pi_local_bridge` server on moraband (or any GPU host)
+#      that loaded this checkpoint via `pi_inference_client.local`. Use a
+#      plain `ws://host:port/path` URL. See `pi_local_bridge/README.md`.
+#
+#   2. Pi-hosted: a route Pi provisions on their commercial gateway
+#      (`wss://api.pi-fleet.com/v1/models/<id>`). Use the `wss://` URL Pi
+#      hands you.
+#
+# `api_key` is resolved from the $PI_API_KEY env var so the secret never
+# lands in git — source `tools/pi_inference_env.sh` first.
+
+type: pi_gateway
+
+# Self-hosted bridge on moraband (default). Switch to a wss://api.pi-fleet.com
+# URL if/when Pi deploys this checkpoint behind their gateway.
+gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v7-history"
+api_key:     "${env:PI_API_KEY}"
+
+execute_chunk_size: 25
+prompt: "fly through the gate"
+
+# Control + integration
+hz: 30
+state_dim: 7
+action_dim: 7
+action_pos_slice: [0, 3]
+action_yaw_index: 3
+
+# Modality wiring — single base + single wrist; no 3pov.
+# Server-declared `camera_names` is validated against these on connect.
+camera_map:
+  forward:  "observation/rgb/image"
+  downward: "observation/wrist_image/rgb/image"
+
+server_frame: "mocap"
+
+# Real-time correction. Requires the server's loaded checkpoint to export
+# an inference function whose kwargs_spec contains both `initial_noise`
+# and (`prefix_info` or `prefix`). For the v7 history finetune, this is
+# `sample_actions_with_prefix` (NOT `sample_actions_fixed_noise`).
+# Configured server-side in pi_local_bridge/configs/local_v7_history.yaml.
+use_rtc: true
+
+# Traceability — metadata only, written next to debug bundles for repro.
+traceability:
+  variant: "pi07_history"
+  wandb_run: "h6jtbq0w"
+  wandb_url: "https://pi.wandb.io/physical-intelligence/octoplus/runs/h6jtbq0w"
+  step: 20000
+  offline_mse: 2.86e-06
+  checkpoint_uri: "gs://dronevla-raw-data/model_checkpoints/2026_may17/mar16_history_ft_dronevla_v7_gate_scenes_may16_311am/h6jtbq0w/20000/model_bfloat16/"
+  processor_name: "dronevla_v7_gate_scenes"
+  base_model: "gemma3_vla_history + HISTORY_LC"
+  pretrain_source: "170k history-mode pretrain"
+  training_recipe: "deft_simba_v2_1; simulated_delay=10 train-time RTC; batch=256; peak_lr=3e-5 (5x decay); ~24 epochs / 214,775 steps"
+  source_datasets:
+    - "gate-scenes-all-no-3pov (300 ep / 79,625 steps)"
+    - "gate-scenes-center-no-3pov (100 ep / 30,100 steps)"
+    - "gate-scenes-real-center-no-3pov (200 ep / 55,525 steps)"
+    - "gate-scenes-real-synth-no-3pov (200 ep / 49,525 steps)"

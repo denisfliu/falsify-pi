@@ -43,7 +43,9 @@ src/falsify/
 ├── geometry/      frame-tagged types + FrameGraph + YAML-driven build
 ├── sim/           FiGS wrapper + gsplat renderer + DroneState + body↔world hinge
 ├── sensors/       pluggable observation pipeline (Sensor, SensorRig, StateSensor, CameraSensor, …)
-├── policy/        Policy ABC, Observation, mocks, VLAPolicy (OpenPI client)
+├── policy/        Policy ABC, Observation, mocks, VLAPolicy (OpenPI client),
+│                  PiGatewayPolicy (pi-inference-client gateway → Pi-hosted
+│                  or self-hosted via pi_local_bridge/)
 ├── safety/        Pluggable safety criteria + FailureDetector with last-safe tracking
 ├── recovery/      SplatNavPlanner — NED in, NED out
 ├── perturbations/ three surfaces (action / observation / environment) + JSON manifest
@@ -54,6 +56,14 @@ src/falsify/
 ├── io/            YAML config loaders + build_frame_graph
 └── cli/           smoke_test, visualize_frames, run_vla_episode, export_training_data,
                    visualize_waypoints, plan_trajectory
+
+pi_local_bridge/      Self-hosted WSS server that speaks pi-inference-client's
+                      gateway wire protocol against a locally-loaded Pi
+                      checkpoint (via pi_inference_client.local + JAX). Lets
+                      us run dronevla v7 finetunes on our own GPU host while
+                      keeping the falsify-side PiGatewayPolicy unchanged.
+                      Separate pyproject so the JAX [local] extras stay out
+                      of the falsify venv.
 ```
 
 **Sensor decoupling.** Policies declare `required_modalities`; the orchestrator
@@ -93,6 +103,35 @@ detector → recovery → visualization). The MPC-backed integrator and concrete
 Splat-MOVER environment perturbations are deferred until the full FiGS env
 and the new gsplat asset land — both wired in behind documented seams.
 Per-package `CLAUDE.md` files document the contracts of each module.
+
+## Querying the VLA
+
+Falsify has **two** policy adapters that talk to a VLA over WebSocket:
+
+- `VLAPolicy` — the legacy path, speaks `openpi_client`'s protocol against
+  the OpenPI server moraband already runs. Used for SousVide-era
+  checkpoints.
+- `PiGatewayPolicy` — speaks `pi_inference_client`'s commercial-gateway
+  wire protocol (`load` / `infer` / `reset` / `telemetry` over WSS with
+  an `Authorization: Api-Key` header). Used for the dronevla v7
+  gate-scenes finetunes (pi07 history + nonhistory). Image preprocessing
+  and action denormalization are server-driven; falsify only handles the
+  NED↔MOCAP boundary.
+
+`PiGatewayPolicy` doesn't care **who** runs the gateway:
+- **Pi-hosted** — `wss://api.pi-fleet.com/v1/models/<id>`, Pi deploys our
+  checkpoint behind their gateway.
+- **Self-hosted** — `ws://moraband:PORT/v1/models/<id>` served by
+  `pi_local_bridge/` (this repo), which loads the checkpoint locally via
+  `pi_inference_client.local` (JAX) and re-exposes it with the same wire
+  protocol Pi publishes. Use when we want inference on our own GPU
+  hardware. See `pi_local_bridge/README.md` for deploy instructions.
+
+Switching topologies is a YAML edit; no falsify-side code changes.
+
+Variant YAMLs live in `configs/policies/pi_gateway/`, one per deployed
+checkpoint; each carries a `traceability:` block (W&B run, step, GCS
+checkpoint URI, processor name) so we can reproduce later.
 
 ## External submodules
 

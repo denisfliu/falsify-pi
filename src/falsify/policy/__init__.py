@@ -9,10 +9,12 @@ from .base import Policy
 from .observation import Observation, ObservationBuilder
 from .mock import MockStraightLine, MockStraightLineConfig, MockNoisy, MockNoisyConfig
 from .vla import VLAPolicy, VLAPolicyConfig, register_policy_host
+from .pi_gateway import PiGatewayPolicy, PiGatewayConfig
 
 __all__ = [
     "Policy", "Observation", "ObservationBuilder",
     "MockStraightLine", "MockStraightLineConfig",
     "MockNoisy", "MockNoisyConfig",
     "VLAPolicy", "VLAPolicyConfig", "register_policy_host",
+    "PiGatewayPolicy", "PiGatewayConfig",
 ]

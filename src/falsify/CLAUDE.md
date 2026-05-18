@@ -7,8 +7,8 @@
 | `geometry/` | Frame-tagged types (`Point`, `Pose`, `Trajectory`, `PointCloud`) + `FrameGraph` + YAML-driven transform registry | 1 | done |
 | `sim/`      | FiGS simulator wrapper + GSplat renderer + `DroneState` + runtime body↔world hinge | 2 | done (v0; FiGS-MPC integrator deferred) |
 | `sensors/`  | Pluggable observation pipeline (`Sensor`, `SensorRig`, `StateSensor`, `PromptSensor`, `CameraSensor`, `build_sensor_rig` factory) | 2 / 3 | done |
-| `policy/`   | `Policy` ABC, `Observation`, mock policies, `VLAPolicy` (OpenPI client, NED↔MOCAP boundary) | 3 / 6 | done |
-| `safety/`   | Pluggable `SafetyCriterion`s (bounds/velocity/tilt), `FailureDetector` (last-safe tracking) | 4 | done |
+| `policy/`   | `Policy` ABC, `Observation`, mock policies, `VLAPolicy` (OpenPI client, NED↔MOCAP boundary), `PiGatewayPolicy` (pi-inference-client gateway — Pi-hosted or self-hosted via `pi_local_bridge/`) | 3 / 6 | done |
+| `safety/`   | Pluggable `SafetyCriterion`s (bounds / velocity / tilt / OBB-vs-point-cloud collision / aperture miss-gate), `FailureDetector` (last-safe tracking, per-criterion reset) | 4 | done |
 | `recovery/` | `SplatNavPlanner` — `plan(start_ned, goal_ned) → Trajectory["ned"]`, lazy backend | 5 | done |
 | `perturbations/` | Three surfaces (`PerturbationSuite`, action/observation/environment), JSON manifest, seedable RNG | 6 | done (env stubs pending Splat-MOVER) |
 | `orchestrator/`  | `run_episode` and (later) `run_campaign` | 3+ | episode done |

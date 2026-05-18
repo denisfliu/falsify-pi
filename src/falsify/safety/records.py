@@ -15,6 +15,9 @@ class FailureType(Enum):
     EXCESSIVE_VELOCITY = auto()
     EXCESSIVE_TILT = auto()
     PROXIMITY_COLLISION = auto()
+    COLLISION_GATE = auto()
+    COLLISION_OTHER = auto()
+    MISS_GATE = auto()
     CUSTOM = auto()
 
 

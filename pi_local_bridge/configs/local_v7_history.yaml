@@ -1,0 +1,54 @@
+# Local-smoke bridge config — runs on the same machine as falsify.
+# NOT for moraband. Points at the locally-downloaded checkpoint under
+# /home/dfliu/checkpoints/ and a single throwaway api key.
+
+listen:
+  host: 127.0.0.1
+  port: 8765
+  ws_path: /v1/models/v7-history
+
+auth:
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+policy:
+  ckpt_path: /home/dfliu/checkpoints/dronevla_v7/h6jtbq0w/20000/model_bfloat16
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  # Use the prefix-capable variant so AsyncRTCPolicyRunner on the client
+  # side has the kwargs it needs (initial_noise + prefix). The
+  # fixed_noise variant lacks `prefix` and falls back to non-RTC mode.
+  inference_function: sample_actions_with_prefix
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  # History-mode checkpoint: state shape is (6, 7), processed by stacking
+  # six consecutive frames into the model input. The bridge passes a single
+  # frame per infer call; the policy's `_history` buffer accumulates.
+  sequence_length: 6
+  sequence_length_stride: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  # Server-side processor input keys. The bridge patches
+  # `_resolve_image_key` to accept these directly (the upstream heuristic
+  # assumes `observation/<camera>/rgb/image` and chokes on the unnamed
+  # base camera).
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: "fly through the gate"
+
+spec_overrides:
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear

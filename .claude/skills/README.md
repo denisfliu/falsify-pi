@@ -46,6 +46,8 @@ in `.claude/skills/`. The skills speak a single canonical type
 | Turn a trajectory + scene into one training parquet | `falsify-export-parquet` | done |
 | Generate many parquets across scenes / sources | `falsify-orchestrate-batch` | done |
 | Combine multiple LeRobot dataset directories into one (drop bad-last, reassign tasks) | `falsify-combine-datasets` | done |
+| Validate a LeRobot dataset against PI's external dataset-sharing validator + compute GCS upload path | `falsify-validate-dataset` | done |
+| Upload a validated LeRobot dataset to PI's GCS partner bucket (`dronevla-raw-data`) | `falsify-upload-dataset` | done |
 | Gray renders, wrong-direction camera, missing gaussians, JIT failure | `falsify-debug-render` | done |
 | Tune `scene_edits` AABBs interactively (find stranded / uncaught Gaussians) | `falsify-author-gaussian-mask` | done |
 

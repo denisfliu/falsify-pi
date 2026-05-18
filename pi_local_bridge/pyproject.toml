@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-local-bridge"
+version = "0.1.0"
+description = "Self-hosted WSS bridge speaking pi-inference-client's gateway protocol against a locally-loaded Pi checkpoint."
+requires-python = ">=3.10"
+dependencies = [
+  # Pi's client carries the local JAX inference path + the wire-format helpers
+  # (msgpack_numpy, schemas) we reuse verbatim. Installed from Pi's private
+  # Artifact Registry — see README for the gcloud / extra-index-url incantation.
+  "pi-inference-client[local]>=0.4.9",
+  "websockets>=12.0",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+pi-local-bridge = "pi_local_bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["pi_local_bridge*"]

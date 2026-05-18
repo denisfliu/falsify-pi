@@ -1,0 +1,66 @@
+# Bridge config — dronevla v7 gate-scenes, pi07 HISTORY mode
+# (gemma3_vla_history + HISTORY_LC). Best offline MSE among v7 finetunes.
+#
+# Run on moraband:
+#   export PI_BRIDGE_API_KEYS="pi-<your-allow-list-key>"
+#   python -m pi_local_bridge --config configs/v7_history.example.yaml
+#
+# Falsify (this repo) connects via configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml
+# with `gateway_url: ws://moraband.stanford.edu:8765/v1/models/v7-history` and
+# `api_key: ${env:PI_API_KEY}` set to one of the allow-listed keys above.
+
+listen:
+  host: 0.0.0.0
+  port: 8765
+  ws_path: /v1/models/v7-history
+
+auth:
+  # Comma-separated allow-list lives in this env var. We never bake the key
+  # into git. Set on the moraband host before launching the bridge.
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+policy:
+  # Local path (gsutil-copied) to the model_bfloat16 directory of the
+  # checkpoint. Source:
+  #   gs://dronevla-raw-data/model_checkpoints/2026_may17/mar16_history_ft_dronevla_v7_gate_scenes_may16_311am/h6jtbq0w/20000/model_bfloat16/
+  ckpt_path: /scratch/checkpoints/dronevla_v7/h6jtbq0w/20000/model_bfloat16
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_fixed_noise
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  # History-mode finetune — state input is (6, 7); the bridge accumulates
+  # six consecutive frames via the policy's internal `_history` buffer.
+  sequence_length: 6
+  sequence_length_stride: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  # Server-side processor input keys (verified from
+  # processors/dronevla_v7_gate_scenes/process_spec.yaml). The bridge
+  # patches `_resolve_image_key` to accept these as-is — the upstream
+  # heuristic assumes `observation/<camera>/rgb/image` and chokes on the
+  # base camera which has no camera-name segment.
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+# Anything LocalPolicyClient.server_config doesn't populate. The defaults
+# we synthesize match v7 training (448², pad+bilinear), but you can pin
+# them here to be explicit / reproducible.
+spec_overrides:
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear
