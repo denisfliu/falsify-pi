@@ -45,6 +45,9 @@ class FailureDetector:
         self._last_safe_state: Optional[DroneState] = None
         self._last_safe_step: int = -1
         self._fired: Optional[FailureRecord] = None
+        # Ordered list of every safe (step, state) the detector has seen this
+        # episode. The recovery layer samples from it with a failure-type bias.
+        self._safe_history: list[tuple[int, DroneState]] = []
 
     @property
     def criteria(self) -> tuple[SafetyCriterion, ...]:
@@ -54,10 +57,15 @@ class FailureDetector:
     def fired(self) -> Optional[FailureRecord]:
         return self._fired
 
+    @property
+    def safe_history(self) -> list[tuple[int, DroneState]]:
+        return list(self._safe_history)
+
     def reset(self) -> None:
         self._last_safe_state = None
         self._last_safe_step = -1
         self._fired = None
+        self._safe_history = []
         for crit in self._criteria:
             crit.reset()
 
@@ -92,10 +100,12 @@ class FailureDetector:
                     last_safe_state=self._last_safe_state if self._last_safe_state is not None else state,
                     criterion_name=crit.name,
                     extra=extra,
+                    safe_history=list(self._safe_history),
                 )
                 self._fired = rec
                 return rec
 
         self._last_safe_state = state
         self._last_safe_step = step
+        self._safe_history.append((step, state))
         return None

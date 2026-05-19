@@ -80,6 +80,31 @@ orchestration, debugging). **Check it before writing a new script** —
 almost every common task is already exposed as a skill that chains
 with the rest.
 
+## Evaluation framework
+
+Reproducible per-policy evaluations live in ``configs/eval_suite/``.
+Scenario YAMLs declare scenes + prompts + recipe (start jitter / gate
+perturbation bounds) + ``n_trials`` + ``master_seed``. Pipeline:
+
+1. ``scripts/generate_eval_bundles.py`` samples N **absolute** trial
+   cards per (scene, trial) into ``runs/eval_bundles/<scenario>/``.
+   Same scenario YAML + master_seed = byte-identical cards across
+   runs, machines, and orchestrator refactors.
+2. ``scripts/run_eval_campaign.py`` loops trial cards and runs each
+   under a given policy, writing per-trial outputs and
+   ``campaign_summary.json`` under
+   ``runs/eval_campaigns/<campaign_name>/``.
+3. ``scripts/summarize_eval_campaign.py`` prints per-scenario /
+   cross-policy breakdowns.
+
+Shipped scenarios (Phase 1 + 2): ``pure`` (left + right + center; start
+jitter only), ``gate_perturbed_small`` (±3 cm / ±3°),
+``gate_perturbed_large`` (±10 cm / ±10°). Compositional (Phase 3 — two
+gates per scene + combined prompt) is planned but not yet wired.
+
+See ``configs/eval_suite/README.md`` for the YAML schema and the
+determinism contract.
+
 ## Producing training data
 
 `falsify.training/` converts any `Trajectory` (NED positions + quaternions

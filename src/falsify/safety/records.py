@@ -18,6 +18,11 @@ class FailureType(Enum):
     COLLISION_GATE = auto()
     COLLISION_OTHER = auto()
     MISS_GATE = auto()
+    # Drone successfully transited the gate aperture but didn't reach the
+    # task-completion ("hover-over-stuffed-animal") goal within the run
+    # — i.e. the post-gate hover failed. Distinct from MISS_GATE because
+    # the gate crossing did succeed.
+    GOAL_NOT_REACHED = auto()
     CUSTOM = auto()
 
 
@@ -25,8 +30,11 @@ class FailureType(Enum):
 class FailureRecord:
     """Detailed record of a detected failure.
 
-    `last_safe_state` is what SplatNav recovery plans from. Frame information
-    is carried by the `DroneState`s themselves.
+    `last_safe_state` is the most-recent safe state, the natural default
+    seed for recovery. `safe_history` carries every safe (step, DroneState)
+    pair the detector saw before the failure — the recovery layer samples
+    from this list with a failure-type-aware bias (e.g. earlier for
+    miss-gate / non-gate collision, later for gate clips).
     """
     failure_type: FailureType
     description: str
@@ -36,6 +44,7 @@ class FailureRecord:
     last_safe_state: DroneState
     criterion_name: str = ""
     extra: dict = field(default_factory=dict)
+    safe_history: list[tuple[int, DroneState]] = field(default_factory=list)
 
     def __str__(self) -> str:
         return (

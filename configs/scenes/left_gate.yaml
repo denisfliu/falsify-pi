@@ -22,10 +22,23 @@ gsplat_data_cwd: ../../data/gate_scenes_export/left_scene
 
 # Mission specification — all in MOCAP (joint mocap, z-up, origin at ArUco tag).
 # Left-gate AABB in joint mocap: x∈[0.51, 1.21], y∈[0.27, 1.12], z∈[0.08, 1.97].
-# We approach from -x at the gate's mean y and a comfortable height.
-start_position_mocap: [-0.50, 0.70, 1.50]
-goal_position_mocap:  [ 1.50, 0.70, 1.50]
-gate_position_mocap:  [ 0.86, 0.69, 1.50]
+#
+# `start_position_mocap` matches the v7 *training* distribution (every
+# synth_left_gate / synth_right_gate / synth_center_* episode starts at
+# (0, 0, 1.5) ± ~2 cm with yaw=0). The previous "approach from -x at the
+# gate's mean y" value (-0.5, 0.7, 1.5) was an off-distribution evaluation
+# the policy hadn't been trained for. Keep within-distribution by default;
+# use `start_randomization` (below) to sweep a small ball around it, and
+# treat any deliberate off-distribution probe as a *perturbation*, not a
+# default.
+start_position_mocap: [0.00, 0.00, 1.50]
+goal_position_mocap:  [1.50, 0.70, 1.50]
+gate_position_mocap:  [0.86, 0.69, 1.50]
+
+# Optional: random ±half_widths uniform offset on the start position.
+# Half-widths of 5 cm bracket the synth training σ ≈ 2-3 cm.
+start_randomization:
+  half_widths_mocap: [0.05, 0.05, 0.05]
 
 frames:
   - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag, +x along tag printed +y)." }
@@ -81,3 +94,23 @@ transforms:
 scene_objects:
   - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/left_gate.ply,  frame: mocap, color: [0.72, 0.32, 0.32] }
   - { name: table, ply: ../../data/gate_scenes_export/objects_final/left_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Published gate-region metadata. Consumed by:
+#   - GateRigidPerturbation (per-episode random offsets in xyz / yaw)
+#   - static scene_edits (center_gate's move_gate uses these same numbers)
+# Numbers come from data/gate_scenes_export/objects_final/objects_summary.json
+# (left_gate AABB tightened to objects_summary; widened by ~0.15 m in xy in
+# `target_aabb_min/max` for the static edit so we catch the gate's fuzzy
+# outer Gaussians — see center_gate.yaml). The include / exclude lists keep
+# the gate Gaussians cleanly separated from the table when we widen.
+gate_region:
+  aabb_frame: mocap
+  aabb_min: [0.36, 0.12, 0.05]
+  aabb_max: [1.36, 1.27, 2.05]
+  anchor:   [0.861, 0.694, 0.075]     # current xy-center, floor z
+  normal:   [0.749, 0.663, 0.0]       # current gate-plane normal (xy)
+  include_aabbs:
+    - { min: [1.175, 0.246, 0.054], max: [1.219, 0.319, 0.689] }
+  exclude_aabbs:
+    - { min: [1.20, -0.85, 0.02], max: [1.85, 0.40, 0.62] }   # the table
+  applies_to_scene_objects: [gate]

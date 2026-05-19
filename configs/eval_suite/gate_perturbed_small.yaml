@@ -1,0 +1,30 @@
+# Gate-perturbed evaluation (small magnitude). Adds a per-trial uniform
+# random rigid jitter to the gate Gaussians on top of start jitter.
+# Magnitudes are slightly tighter than what the v7 finetune saw during
+# training so we test in-distribution robustness.
+
+name: gate_perturbed_small
+description: |
+  {left, right} gate scenes with small per-trial rigid gate jitter
+  (±3 cm xy, ±3° yaw) and start jitter.
+
+n_trials: 20
+master_seed: 0
+
+recipe:
+  start_randomization:
+    enabled: true
+  gate_perturbation:
+    enabled: true
+    # Uniform half-widths in MOCAP. dz=0 by default — the gates don't
+    # plausibly move vertically.
+    offset_half_widths: [0.03, 0.03, 0.0]   # ±3 cm in x, y
+    yaw_half_width_rad: 0.05236             # ±3° (= 3π/180)
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  left_gate
+    safety:       configs/safety/left_gate.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  right_gate
+    safety:       configs/safety/right_gate.yaml

@@ -351,27 +351,38 @@ class TiltCriterion(SafetyCriterion):
 
 
 class MissGateCriterion(SafetyCriterion):
-    """Fire when the drone crosses the gate plane outside the aperture.
+    """Catch every way the drone fails to navigate the gate.
 
-    The aperture is a 3D rectangle defined by four corners in some named
-    frame. Internally we compute:
+    Emits ``MISS_GATE`` on any of:
 
-      - plane normal ``n``           = unit normal of the plane through the corners,
-      - plane offset ``d``           = ``n · centre`` (any corner works),
-      - two in-plane axes ``u, v``   = orthonormal axes along adjacent edges,
-      - half-widths ``hu, hv``       = aperture extents along ``u`` and ``v``,
-      - centre                       = mean of the four corners.
+    - **(a) Plane-crossing outside the aperture** — the drone crossed the
+      gate plane but the crossing point is outside the rectangle defined
+      by ``corners``. Classic geometric miss.
+    - **(b) Reached goal proximity without transiting** — drone is within
+      ``goal_tolerance_m`` of ``goal_position`` but never crossed the
+      aperture plane inside the rectangle. The policy short-circuited to
+      the goal without going through the gate.
+    - **(c) Stuck before transit** — distance to the aperture centre has
+      not decreased by at least ``min_progress_m`` in the trailing
+      ``min_progress_window_s`` seconds. The drone is hovering, drifting,
+      or otherwise failing to make headway toward the gate.
 
-    Each call records ``state.pos`` as the previous-state cache. Between
-    consecutive states the segment ``p0 → p1`` is intersected with the
-    plane (signed distance changes sign). If a crossing is found, the
-    intersection point is projected into ``(u, v)`` coords; if either is
-    outside its half-width, fire `FailureType.MISS_GATE`. Inside ⇒ the
-    drone went through the gate; mark `_transited` so we don't fire on
-    subsequent re-crossings (e.g. recovery loops back through).
+    Emits ``GOAL_NOT_REACHED`` when the drone *did* transit successfully
+    but then fails to reach the goal:
 
-    The criterion needs ``check_with_graph`` to convert *both* the prev
-    and current state into the aperture's frame, so we override that.
+    - **(d) Stuck after transit** — same no-progress check as (c) but
+      using distance to ``goal_position`` instead of the aperture centre.
+
+    Modes (b)/(c)/(d) only activate when ``goal_position`` /
+    ``min_progress_window_s`` are configured. Without them, the criterion
+    degrades to the original geometric-only miss check (a).
+
+    Aperture geometry:
+
+      - plane normal ``n``         = unit normal through the four corners,
+      - in-plane axes ``u, v``     = orthonormal axes along adjacent edges,
+      - half-widths ``hu, hv``     = aperture extents along ``u`` / ``v``,
+      - centre                     = mean of the four corners.
     """
 
     name: str = "miss_gate"
@@ -382,6 +393,10 @@ class MissGateCriterion(SafetyCriterion):
         *,
         frame_name: str = "mocap",
         margin_m: float = 0.0,
+        goal_position: Optional[np.ndarray] = None,
+        goal_tolerance_m: float = 0.30,
+        min_progress_window_s: Optional[float] = None,
+        min_progress_m: float = 0.05,
     ) -> None:
         corners = np.asarray(corners, dtype=np.float64)
         if corners.shape != (4, 3):
@@ -416,14 +431,37 @@ class MissGateCriterion(SafetyCriterion):
         self.hu = hu
         self.hv = hv
         self.margin_m = float(margin_m)
+        # Optional goal + progress fields (modes b/c/d).
+        self.goal_xyz: Optional[np.ndarray] = (
+            np.asarray(goal_position, dtype=np.float64)
+            if goal_position is not None else None
+        )
+        self.goal_tolerance_m = float(goal_tolerance_m)
+        self.min_progress_window_s: Optional[float] = (
+            float(min_progress_window_s)
+            if min_progress_window_s is not None else None
+        )
+        self.min_progress_m = float(min_progress_m)
+        # State.
         self._prev_xyz: Optional[np.ndarray] = None
         self._transited: bool = False
+        # Time at which the drone first transited the aperture. Used by
+        # the recovery seed sampler to scope its draw to post-transit
+        # states when failure mode is GOAL_NOT_REACHED.
+        self._transit_t: Optional[float] = None
+        # Sliding window of (time, distance-to-current-target) for the
+        # no-progress check. Target swaps from aperture centre → goal at
+        # transit.
+        from collections import deque
+        self._progress: "deque[tuple[float, float]]" = deque()
 
     # ---- overrides -----------------------------------------------------
 
     def reset(self) -> None:
         self._prev_xyz = None
         self._transited = False
+        self._transit_t = None
+        self._progress.clear()
 
     def check(self, state_in_frame: DroneState) -> Optional[Violation]:
         # Logic lives in `check_with_graph` so we can read prev_xyz
@@ -445,38 +483,117 @@ class MissGateCriterion(SafetyCriterion):
 
         prev = self._prev_xyz
         self._prev_xyz = xyz
-        if prev is None or self._transited:
+
+        # ---- (a) plane-crossing check (only meaningful pre-transit) -----
+        if prev is not None and not self._transited:
+            s0 = float(np.dot(prev - self.centre, self.n))
+            s1 = float(np.dot(xyz - self.centre, self.n))
+            if s0 != s1 and s0 * s1 <= 0.0:
+                # Parametric crossing point.
+                t = s0 / (s0 - s1)
+                cross = prev + t * (xyz - prev)
+                rel = cross - self.centre
+                cu = float(np.dot(rel, self.u))
+                cv = float(np.dot(rel, self.v))
+                inside_u = abs(cu) <= self.hu - self.margin_m
+                inside_v = abs(cv) <= self.hv - self.margin_m
+                if inside_u and inside_v:
+                    self._transited = True
+                    self._transit_t = float(state.t)
+                    # Clear the progress window — distance metric is about
+                    # to switch from "aperture centre" to "goal".
+                    self._progress.clear()
+                else:
+                    worst = max(abs(cu) - self.hu, abs(cv) - self.hv)
+                    return Violation(
+                        description=(
+                            f"drone crossed gate plane at "
+                            f"(u={cu:+.3f}, v={cv:+.3f}) outside aperture "
+                            f"half-widths (hu={self.hu:.3f}, hv={self.hv:.3f}) "
+                            f"in frame {self.operates_in_frame!r}"
+                        ),
+                        value=float(worst),
+                        threshold=0.0,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"cu": cu, "cv": cv, "hu": self.hu, "hv": self.hv},
+                    )
+
+        # ---- (b/c/d) goal-aware checks — only when goal is configured ---
+        if self.goal_xyz is None:
             return None
 
-        s0 = float(np.dot(prev - self.centre, self.n))
-        s1 = float(np.dot(xyz - self.centre, self.n))
-        if s0 * s1 > 0.0:
-            return None  # same side, no crossing
-        if s0 == s1:
-            return None  # both exactly on the plane — no clean crossing
+        dist_to_goal = float(np.linalg.norm(xyz - self.goal_xyz))
 
-        # Parametric crossing point: prev + t * (xyz - prev), t = s0 / (s0 - s1)
-        t = s0 / (s0 - s1)
-        cross = prev + t * (xyz - prev)
-        rel = cross - self.centre
-        cu = float(np.dot(rel, self.u))
-        cv = float(np.dot(rel, self.v))
-        inside_u = abs(cu) <= self.hu - self.margin_m
-        inside_v = abs(cv) <= self.hv - self.margin_m
-        if inside_u and inside_v:
-            self._transited = True
+        # (b) Reached goal proximity without transiting → MISS_GATE.
+        if (not self._transited) and dist_to_goal <= self.goal_tolerance_m:
+            return Violation(
+                description=(
+                    f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                    f"≤ {self.goal_tolerance_m:.3f} m) without crossing the "
+                    f"gate aperture — skipped the gate"
+                ),
+                value=dist_to_goal,
+                threshold=self.goal_tolerance_m,
+                failure_type=FailureType.MISS_GATE,
+                extra={"mode": "goal_without_transit",
+                       "dist_to_goal": dist_to_goal},
+            )
+
+        # (f) Post-transit success — drone has transited AND is at goal.
+        if self._transited and dist_to_goal <= self.goal_tolerance_m:
+            # Nothing to report; mark progress window irrelevant.
+            self._progress.clear()
             return None
 
-        worst = max(abs(cu) - self.hu, abs(cv) - self.hv)
-        return Violation(
-            description=(
-                f"drone crossed gate plane at "
-                f"(u={cu:+.3f}, v={cv:+.3f}) outside aperture "
-                f"half-widths (hu={self.hu:.3f}, hv={self.hv:.3f}) "
-                f"in frame {self.operates_in_frame!r}"
-            ),
-            value=float(worst),
-            threshold=0.0,
-            failure_type=FailureType.MISS_GATE,
-            extra={"cu": cu, "cv": cv, "hu": self.hu, "hv": self.hv},
-        )
+        # (c)/(d) Stuck check. Track distance to the *relevant* target.
+        if self.min_progress_window_s is None:
+            return None
+        target_xyz = self.centre if not self._transited else self.goal_xyz
+        dist_to_target = float(np.linalg.norm(xyz - target_xyz))
+        t_now = float(state.t)
+        self._progress.append((t_now, dist_to_target))
+        # Trim entries older than the window.
+        while (self._progress
+               and t_now - self._progress[0][0] > self.min_progress_window_s):
+            self._progress.popleft()
+        # We need at least the full window of history before judging.
+        if not self._progress:
+            return None
+        t_oldest, d_oldest = self._progress[0]
+        if t_now - t_oldest < self.min_progress_window_s:
+            return None
+        progress = d_oldest - dist_to_target
+        if progress < self.min_progress_m:
+            if not self._transited:
+                return Violation(
+                    description=(
+                        f"drone hasn't reduced distance to aperture by "
+                        f"≥{self.min_progress_m:.3f} m in the last "
+                        f"{self.min_progress_window_s:.1f} s "
+                        f"(d_oldest={d_oldest:.3f} → d_now={dist_to_target:.3f}); "
+                        f"stuck before the gate"
+                    ),
+                    value=float(progress),
+                    threshold=self.min_progress_m,
+                    failure_type=FailureType.MISS_GATE,
+                    extra={"mode": "stuck_before_transit",
+                           "dist_to_aperture": dist_to_target,
+                           "dist_to_goal": dist_to_goal},
+                )
+            else:
+                return Violation(
+                    description=(
+                        f"drone transited the gate but hasn't reduced "
+                        f"distance to goal by ≥{self.min_progress_m:.3f} m in "
+                        f"the last {self.min_progress_window_s:.1f} s "
+                        f"(d_oldest={d_oldest:.3f} → d_now={dist_to_target:.3f}); "
+                        f"post-gate hover failed"
+                    ),
+                    value=float(progress),
+                    threshold=self.min_progress_m,
+                    failure_type=FailureType.GOAL_NOT_REACHED,
+                    extra={"mode": "stuck_after_transit",
+                           "dist_to_goal": dist_to_target,
+                           "transit_time": self._transit_t},
+                )
+        return None

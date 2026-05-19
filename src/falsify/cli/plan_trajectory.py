@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from falsify.io import build_frame_graph, load_yaml
-from falsify.planning import load_course, plan_spline
+from falsify.planning import load_course, plan_mpc, plan_spline
 from falsify.training import save_trajectory
 
 
@@ -36,9 +36,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="Path to write the Trajectory NPZ.")
     p.add_argument("--prompt", type=str, default="",
                    help="Embed in the Trajectory NPZ as the task prompt.")
-    p.add_argument("--planner", choices=["spline"], default="spline",
-                   help="Planner backend. Currently spline only; mpc/splatnav "
-                        "stubs live as skills until the integrator lands.")
+    p.add_argument("--planner", choices=["spline", "mpc"], default="spline",
+                   help="Planner backend. spline = cubic-spline through "
+                        "positions (geometric). mpc = FiGS VehicleRateMPC "
+                        "tracking a min-time-snap reference (dynamically "
+                        "feasible; first call pays ~30s acados JIT).")
+    p.add_argument("--mpc-frame", type=Path, default=None,
+                   help="FiGS-schema drone frame JSON. Defaults to "
+                        "configs/frames/figs/carl.json. mpc planner only.")
     args = p.parse_args(argv)
 
     scene_cfg = load_yaml(args.scene)
@@ -47,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.planner == "spline":
         traj = plan_spline(course, fg, prompt=args.prompt)
+    elif args.planner == "mpc":
+        traj = plan_mpc(course, fg, prompt=args.prompt, frame_cfg=args.mpc_frame)
     else:
         raise SystemExit(f"unsupported planner {args.planner!r}")
 

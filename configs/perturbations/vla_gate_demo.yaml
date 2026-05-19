@@ -1,0 +1,38 @@
+# Perturbation suite for live VLA gate-scene runs (PiGatewayPolicy → moraband).
+#
+# Surfaces:
+#   - observation : mutates the Observation between SensorRig.build() and
+#                   policy.observe(). Image keys are `images.<camera>` where
+#                   <camera> matches the names declared in the frame YAML
+#                   (forward / downward for carl_dual). `state.pos` is a
+#                   frame-tagged Point in NED.
+#   - action      : mutates the Trajectory returned by the policy before the
+#                   simulator follows it. Position-space units are NED meters.
+#   - environment : mutates the gsplat between episodes. INFRASTRUCTURE-ONLY
+#                   in v0 — the only registered impl raises NotImplementedError
+#                   pending Splat-MOVER wiring. Leave empty for now.
+#
+# Reproducibility: the suite owns one numpy Generator seeded here. The manifest
+# (in episode_summary.json under `perturbations`) records every parameter so a
+# run can be replayed exactly.
+
+seed: 0
+
+observation:
+  # Sensor noise on the forward camera (intensity units, 0–255).
+  - { type: ImageGaussianNoise, camera: forward,  std: 4.0 }
+  # Mild defocus on the downward camera.
+  - { type: ImageBlur,          camera: downward, kernel: 3 }
+  # State-estimate noise — adds Gaussian noise to the NED position the policy sees.
+  - { type: StateNoise,         std: 0.01 }
+
+action:
+  # Waypoint noise — small jitter on every position returned by the policy.
+  - { type: PositionNoise, std: 0.02 }
+  # Constant bias — shift every waypoint 5 cm to the right (mocap +y → NED -y
+  # under the perm5 ned↔mocap transform; here we apply directly in NED).
+  - { type: PositionBias, bias_xyz: [0.0, -0.05, 0.0] }
+  # Multiplicative velocity scale — simulates a slightly underpowered drone.
+  - { type: VelocityScale, scale: 0.95 }
+
+environment: []  # stub-only until Splat-MOVER lands

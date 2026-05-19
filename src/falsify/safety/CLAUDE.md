@@ -40,17 +40,36 @@ helper — criteria that need cross-frame velocity should override
 `check_with_graph` (no such criterion exists yet; the bounds/velocity/tilt
 criteria all live in NED).
 
-## Last-safe state
+## Last-safe state + safe-state history
 
-`FailureDetector` records the most recent safe state. On first failure, the
-emitted `FailureRecord` includes:
+`FailureDetector` records both the most recent safe state and the full
+ordered history of safe `(step, DroneState)` pairs for the episode. On
+first failure, the emitted `FailureRecord` includes:
 
 - `failure_state` — the offending `DroneState`
-- `last_safe_state` — the previous safe `DroneState`
-- `last_safe_step` — its index in the rollout
+- `last_safe_state` / `last_safe_step` — the previous safe state and its index
+- `safe_history: list[(step, DroneState)]` — every safe step the detector
+  saw before the failure, in chronological order
 - `description`, `value`, `threshold` — diagnostics
 
-`last_safe_state` is what the recovery planner consumes.
+`last_safe_state` is a natural single-state seed for recovery. The full
+`safe_history` is consumed by
+`falsify.recovery.seed_sampling.sample_recovery_seed` — see
+`src/falsify/recovery/CLAUDE.md§ Replanning seed sampling` for the
+full contract (failure-type bias, post-transit scoping for
+`GOAL_NOT_REACHED`, persisted metadata). Quick summary:
+
+| Failure type                                            | Sampling scope          | Bias        |
+|--------------------------------------------------------|-------------------------|-------------|
+| `COLLISION_GATE`                                       | full `safe_history`     | Beta(3, 1)  |
+| `MISS_GATE`, `COLLISION_OTHER`, `OUT_OF_BOUNDS`        | full `safe_history`     | Beta(1, 3)  |
+| `GOAL_NOT_REACHED`                                     | states with `state.t ≥ transit_time` | Beta(1, 3) |
+
+For `GOAL_NOT_REACHED`, `MissGateCriterion` records the time of
+successful transit in `_transit_t` and stamps it into
+`Violation.extra["transit_time"]`; the detector merges it into
+`FailureRecord.extra`; the orchestrator forwards it as the
+`transit_time=` kwarg to the sampler.
 
 ## Failure taxonomy
 
@@ -63,7 +82,8 @@ emitted `FailureRecord` includes:
 | `EXCESSIVE_TILT` | `TiltCriterion` | body-z deviation from world-z exceeds threshold |
 | `COLLISION_GATE` | `PointCloudCollisionCriterion` | drone OBB intersects a `"gate"`-labelled point |
 | `COLLISION_OTHER` | `PointCloudCollisionCriterion` | drone OBB intersects a non-gate-labelled point |
-| `MISS_GATE` | `MissGateCriterion` | drone crossed the gate plane outside the aperture rectangle |
+| `MISS_GATE` | `MissGateCriterion` | drone failed to navigate the gate. Three sub-modes (all emit MISS_GATE): (a) plane-crossing outside aperture, (b) reached goal proximity without transit, (c) no progress toward aperture in `min_progress_window_s` seconds. |
+| `GOAL_NOT_REACHED` | `MissGateCriterion` | drone *did* transit the aperture but then failed to reach `goal_position` — no progress toward goal in `min_progress_window_s` seconds. The "post-gate hover failed" case. |
 | `PROXIMITY_COLLISION` | (reserved for future scalar-distance criterion) | |
 | `CUSTOM` | anything without a name-mapping | fallback |
 

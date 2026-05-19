@@ -1,0 +1,27 @@
+# Gate-perturbed evaluation (large magnitude). Same shape as
+# gate_perturbed_small.yaml but with much larger gate jitter so we
+# probe out-of-distribution robustness.
+
+name: gate_perturbed_large
+description: |
+  {left, right} gate scenes with larger per-trial rigid gate jitter
+  (±10 cm xy, ±10° yaw) and start jitter.
+
+n_trials: 20
+master_seed: 0
+
+recipe:
+  start_randomization:
+    enabled: true
+  gate_perturbation:
+    enabled: true
+    offset_half_widths: [0.10, 0.10, 0.0]   # ±10 cm in x, y
+    yaw_half_width_rad: 0.17453             # ±10° (= 10π/180)
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  left_gate
+    safety:       configs/safety/left_gate.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  right_gate
+    safety:       configs/safety/right_gate.yaml

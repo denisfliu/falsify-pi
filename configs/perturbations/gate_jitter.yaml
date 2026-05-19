@@ -1,0 +1,27 @@
+# Per-episode random gate-position jitter for the left / right / center gate
+# scenes. The environment perturbation reads each scene's `gate_region:` block
+# (in configs/scenes/<scene>.yaml) so the same YAML works against any of the
+# three scenes — point run_vla_episode at the scene you want and the
+# perturbation samples a new gate pose within these bounds at episode start.
+#
+# Bounds are uniform half-widths in MOCAP meters / radians:
+#   offset_half_widths: [hx, hy, hz]   — sampled Δxyz ∈ [-hx, +hx] × [-hy, +hy] × [-hz, +hz]
+#   yaw_half_width_rad: θ              — sampled Δyaw ∈ [-θ, +θ] about MOCAP +z
+#
+# Reproducibility: the suite's seed feeds the same RNG that draws Δxyz / Δyaw,
+# so seed + this YAML = exact replay.
+#
+# The default below jitters the gate by up to ±20 cm in x, ±30 cm in y,
+# ±5 cm in z, and ±15° in yaw — well inside the kind of pose error a real
+# placement would have, and large enough that the VLA actually has to track
+# it rather than rely on memorized layout.
+
+seed: 0
+
+observation: []
+action: []
+
+environment:
+  - type: GateRigidPerturbation
+    offset_half_widths: [0.20, 0.30, 0.05]
+    yaw_half_width_rad: 0.262     # ≈ 15°

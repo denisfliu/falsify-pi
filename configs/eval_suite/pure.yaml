@@ -1,0 +1,43 @@
+# Pure evaluation scenario — base gate scenes with start jitter only.
+#
+# Each scene's `start_randomization.half_widths_mocap` (in the scene YAML)
+# defines the box the start position is sampled from. No gate
+# perturbation, no observation/action noise.
+#
+# Generate trial cards once with:
+#
+#   PYTHONPATH=src python scripts/generate_eval_bundles.py \
+#       --scenario configs/eval_suite/pure.yaml
+#
+# That writes runs/eval_bundles/pure/<scene>/trial_NNN.json. Then run
+# a campaign with:
+#
+#   PYTHONPATH=src python scripts/run_eval_campaign.py \
+#       --scenario configs/eval_suite/pure.yaml \
+#       --policy-config configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml \
+#       --out runs/eval_campaigns/<campaign_name>
+
+name: pure
+description: |
+  Base gate scenes (left, right, center). Only perturbation is the drone
+  start position, sampled within the scene's start_randomization half-widths.
+
+n_trials: 20
+master_seed: 0
+
+recipe:
+  start_randomization:
+    enabled: true        # use scene's half_widths_mocap
+  gate_perturbation:
+    enabled: false
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  left_gate
+    safety:       configs/safety/left_gate.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  right_gate
+    safety:       configs/safety/right_gate.yaml
+  - scene:        configs/scenes/center_gate.yaml
+    prompt_name:  center_from_left
+    safety:       configs/safety/center_gate.yaml

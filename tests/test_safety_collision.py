@@ -211,6 +211,33 @@ def test_miss_gate_reset_clears_transit():
     assert crit._prev_xyz is None
 
 
+def test_miss_gate_goal_not_reached_emits_transit_time():
+    """Transit successful then drone hovers; GOAL_NOT_REACHED carries the
+    transit time so the recovery seed sampler can scope post-transit."""
+    g = _graph_ned_only()
+    g.register_frame(MOCAP)
+    g.register_edge(SE3.identity(NED, MOCAP))
+    crit = MissGateCriterion(
+        _square_aperture_mocap(), frame_name="mocap",
+        goal_position=np.array([0.0, 3.0, 1.5]),
+        goal_tolerance_m=0.1,
+        min_progress_window_s=1.0,
+        min_progress_m=0.05,
+    )
+    # Pre-transit: y=-1 to y=+1, crossing y=0 at t=1.0 (linear interpolation
+    # makes transit_t the post-crossing state's t).
+    assert crit.check_with_graph(_state(pos=(0, -1, 1.5), frame=MOCAP, t=0.0), g) is None
+    assert crit.check_with_graph(_state(pos=(0,  1, 1.5), frame=MOCAP, t=1.0), g) is None
+    assert crit._transited is True
+    assert crit._transit_t == 1.0
+    # Post-transit hover at y=1 for >= min_progress_window_s.
+    assert crit.check_with_graph(_state(pos=(0, 1, 1.5), frame=MOCAP, t=1.5), g) is None
+    v = crit.check_with_graph(_state(pos=(0, 1, 1.5), frame=MOCAP, t=2.5), g)
+    assert v is not None
+    assert v.failure_type is FailureType.GOAL_NOT_REACHED
+    assert v.extra.get("transit_time") == 1.0
+
+
 def test_miss_gate_rejects_non_rectangular_corners():
     # Parallelogram, not a rectangle: corners[3] - corners[0] = (1, 0.1, 0)
     # which is not orthogonal to corners[1] - corners[0] = (1, 0, 0).

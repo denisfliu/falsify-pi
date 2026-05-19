@@ -138,6 +138,13 @@ class GSplatRenderer:
                 "scene_edits requires frame_graph= to lift the edit into NS"
             )
 
+        # Save a baseline of (means, quats) AFTER any construction-time edits
+        # so per-episode environment perturbations can restore to a clean
+        # post-static-edit state before applying their own random edits.
+        self._baseline_means = None
+        self._baseline_quats = None
+        self._frame_graph = frame_graph
+
     @staticmethod
     def _patch_splatfacto_near_plane(clip_thresh: float) -> None:
         """Override ``nerfstudio.models.splatfacto.project_gaussians``'s
@@ -206,6 +213,47 @@ class GSplatRenderer:
     @property
     def world_frame(self) -> str:
         return self._world_frame
+
+    @property
+    def pipeline(self):
+        """Nerfstudio pipeline owned by the underlying FiGS GSplat."""
+        return self._impl.pipeline
+
+    @property
+    def frame_graph(self) -> Optional[FrameGraph]:
+        return self._frame_graph
+
+    def snapshot_baseline(self) -> None:
+        """Clone the current `pipeline.model.means` / `.quats` into a CPU
+        baseline. Idempotent — calling twice keeps the first snapshot, so
+        callers can invoke this on every episode without worrying about
+        accumulated drift."""
+        if self._baseline_means is not None:
+            return
+        import torch
+        with torch.no_grad():
+            self._baseline_means = self._impl.pipeline.model.means.detach().clone()
+            self._baseline_quats = self._impl.pipeline.model.quats.detach().clone()
+
+    def restore_baseline(self) -> None:
+        """Copy the baseline back into the live pipeline. No-op if no baseline
+        has been taken yet — in that case the pipeline IS the baseline."""
+        if self._baseline_means is None:
+            return
+        import torch
+        with torch.no_grad():
+            self._impl.pipeline.model.means.data.copy_(self._baseline_means)
+            self._impl.pipeline.model.quats.data.copy_(self._baseline_quats)
+
+    def apply_dynamic_edits(self, edits) -> int:
+        """Apply a list of `SceneEdit`s to the live pipeline and return the
+        number of Gaussians modified. Restores to baseline first so each call
+        starts clean (and snapshots a baseline if none exists yet)."""
+        if self._frame_graph is None:
+            raise ValueError("apply_dynamic_edits requires a FrameGraph")
+        self.snapshot_baseline()
+        self.restore_baseline()
+        return apply_edits_to_pipeline(self._impl.pipeline, edits, self._frame_graph)
 
     def render(
         self,

@@ -6,9 +6,13 @@ See ``CLAUDE.md`` for the workflow:
 Today's planners:
 - ``plan_spline``: cubic spline through positions; yaw per ``yaw_mode``.
   Adequate baseline for renderer / dataset bring-up.
+- ``plan_mpc``: FiGS ``VehicleRateMPC`` tracking a min-time-snap
+  reference through the course's waypoints, integrated with an
+  ``acados`` IRK solver. Dynamically feasible. Heavy first-call cost
+  due to acados JIT (~30 s); the produced shared library is isolated
+  per-call in a tempfile so concurrent planners don't collide.
 
-Planners on the roadmap:
-- ``plan_mpc``: FiGS VehicleRateMPC over a feasible reference. Stub.
+Planner on the roadmap:
 - ``plan_splatnav``: SplatNav A* + spline through the gsplat. Stub.
 """
 
@@ -22,6 +26,7 @@ from .waypoints import (
     save_course,
 )
 from .spline import plan_spline
+from .mpc import plan_mpc
 from .perturbations import (
     CourseVariant,
     Direction,
@@ -39,6 +44,7 @@ __all__ = [
     "load_course",
     "save_course",
     "plan_spline",
+    "plan_mpc",
     "CourseVariant",
     "Direction",
     "perturb_waypoint",

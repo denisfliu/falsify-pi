@@ -20,6 +20,11 @@ start_position_mocap: [0.0, 0.0, 1.5]
 goal_position_mocap:  [1.525, -0.615, 1.0]
 gate_position_mocap:  [2.5, -0.25, 1.5]
 
+# Optional uniform ±half_widths offset on the start position. ±5 cm brackets
+# the synth training σ ≈ 2-3 cm in xy/z.
+start_randomization:
+  half_widths_mocap: [0.05, 0.05, 0.05]
+
 frames:
   - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag, +x along tag printed +y)." }
   - { name: ned,   notes: "FiGS dynamics frame; perm5 of mocap (diag(1,-1,-1))." }
@@ -45,6 +50,23 @@ transforms:
 scene_objects:
   - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/left_gate.ply,  frame: mocap, color: [0.72, 0.32, 0.32] }
   - { name: table, ply: ../../data/gate_scenes_export/objects_final/left_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Published gate-region metadata. After the `move_gate` static edit below,
+# the gate is centered over (2.75, -0.25, 0.0) with plane normal (0, -1, 0).
+# `GateRigidPerturbation` samples deltas relative to this anchor/normal.
+gate_region:
+  aabb_frame: mocap
+  # AABB tracks the gate's NEW location (post-static-edit) — the perturbation
+  # uses this only when it needs to re-select the gate Gaussians on top of an
+  # already-baseline-restored pipeline. For static-edit-only flows the AABB
+  # below is unused.
+  aabb_min: [2.25, -0.69, 0.05]
+  aabb_max: [3.25,  0.16, 2.05]
+  anchor:   [2.75, -0.25, 0.0]
+  normal:   [0.0, -1.0, 0.0]
+  include_aabbs: []
+  exclude_aabbs: []
+  applies_to_scene_objects: [gate]
 
 # Move the gate Gaussians (and the gate PLY in the inspector view) so the
 # gate sits centered over (2.5, -0.25, 0) with mocap +y as its plane normal.

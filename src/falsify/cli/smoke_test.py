@@ -33,7 +33,7 @@ from falsify.policy import (
     MockStraightLine, MockStraightLineConfig,
 )
 from falsify.perturbations import (
-    ImageBlur, ImageGaussianNoise, PerturbationSuite,
+    GateRigidPerturbation, ImageBlur, ImageGaussianNoise, PerturbationSuite,
     PositionBias, PositionNoise, StateNoise, VelocityScale,
 )
 from falsify.recovery import RecoveryConfig, SplatNavPlanner
@@ -55,11 +55,25 @@ _PERT_ACTION = {
     "PositionBias": PositionBias,
     "VelocityScale": VelocityScale,
 }
+_PERT_ENVIRONMENT = {
+    "GateRigidPerturbation": GateRigidPerturbation,
+}
 
 
-def _build_perturbations_factory(top_cfg: dict):
-    pert_path = top_cfg.get("perturbations")
-    if not pert_path:
+def build_perturbations_factory(pert_path):
+    """Build a `PerturbationSuite` factory from a YAML path.
+
+    YAML schema::
+
+        seed: <int|null>
+        observation: [{type: ImageGaussianNoise, camera: forward, std: 5.0}, ...]
+        action:      [{type: PositionNoise, std: 0.02}, ...]
+        environment: []   # stubs only until Splat-MOVER lands
+
+    `pert_path` may be a `Path`, a string path, or `None` (returns `None`).
+    Repo-relative paths resolve from the repo root.
+    """
+    if pert_path is None:
         return None
     repo_root = Path(__file__).resolve().parents[3]
     cfg_path = Path(pert_path)
@@ -67,17 +81,52 @@ def _build_perturbations_factory(top_cfg: dict):
         cfg_path = repo_root / cfg_path
     spec = load_yaml(cfg_path)
 
-    def factory(_frame_graph, _episode_cfg):
+    def factory(_frame_graph, episode_cfg):
+        # Environment perturbations need the scene YAML for gate_region etc.
+        # The orchestrator stashes the parsed scene_cfg under
+        # episode_cfg["scene_cfg"] before calling the factory.
+        scene_cfg = (episode_cfg or {}).get("scene_cfg")
+        # Trial-card replay path: per-perturbation absolute overrides,
+        # keyed by `name` (or the type name as fallback).
+        overrides = (episode_cfg or {}).get("overrides") or {}
         obs_perts = [_PERT_OBSERVATION[e["type"]](**{k: v for k, v in e.items() if k != "type"})
                      for e in spec.get("observation", [])]
         act_perts = [_PERT_ACTION[e["type"]](**{k: v for k, v in e.items() if k != "type"})
                      for e in spec.get("action", [])]
+        env_perts = []
+        for e in spec.get("environment", []):
+            kls = _PERT_ENVIRONMENT[e["type"]]
+            kwargs = {k: v for k, v in e.items() if k != "type"}
+            # Scene-aware perturbations (the only kind we currently ship)
+            # get the parsed scene_cfg injected so their __init__ can read
+            # gate_region etc. Future scene-agnostic env perturbations
+            # would simply omit `scene_cfg` from their dataclass.
+            from dataclasses import fields as _fields
+            if any(f.name == "scene_cfg" for f in _fields(kls)) and scene_cfg is not None:
+                kwargs.setdefault("scene_cfg", scene_cfg)
+            pert = kls(**kwargs)
+            # If the trial card carries absolute deltas for this perturbation,
+            # switch the instance into replay mode (currently supported by
+            # GateRigidPerturbation via `set_absolute_deltas`).
+            key = kwargs.get("name") or e["type"]
+            override = overrides.get(key)
+            if override is not None and hasattr(pert, "set_absolute_deltas"):
+                pert.set_absolute_deltas(
+                    delta_xyz=override["delta_xyz"],
+                    delta_yaw_rad=override["delta_yaw_rad"],
+                )
+            env_perts.append(pert)
         return PerturbationSuite(
             observation=obs_perts,
             action=act_perts,
+            environment=env_perts,
             seed=spec.get("seed"),
         )
     return factory
+
+
+def _build_perturbations_factory(top_cfg: dict):
+    return build_perturbations_factory(top_cfg.get("perturbations"))
 
 
 def _policy_factory_from_yaml(policy_cfg: dict, *, scene_cfg=None, scene_dir=None):
@@ -212,16 +261,23 @@ def _build_detector_factory(scene_cfg: dict, scene_dir: Path):
             TiltCriterion(max_tilt_rad=float(safety_cfg.get("max_tilt_rad", 1.2))),
         ]
 
+        # Gate-perturbation deltas (injected by the orchestrator). When
+        # present, the collision PLYs + aperture corners are rigidly
+        # transformed by the same Δxyz / Δyaw about the gate anchor so
+        # they stay aligned with the moved gate Gaussians.
+        gate_deltas = safety_cfg.get("_gate_deltas")
+
         collision_cfg = safety_cfg.get("collision")
         if collision_cfg and collision_cfg.get("enabled", False):
             criteria.append(_build_collision_criterion(
                 scene_cfg, scene_dir, frame_graph,
                 safety_cfg=safety_cfg, collision_cfg=collision_cfg,
+                gate_deltas=gate_deltas,
             ))
 
         miss_gate_cfg = safety_cfg.get("miss_gate")
         if miss_gate_cfg:
-            criteria.append(_build_miss_gate_criterion(miss_gate_cfg))
+            criteria.append(_build_miss_gate_criterion(miss_gate_cfg, gate_deltas=gate_deltas))
 
         return FailureDetector(criteria, frame_graph)
     return factory
@@ -249,6 +305,7 @@ def _build_collision_criterion(
     *,
     safety_cfg: dict,
     collision_cfg: dict,
+    gate_deltas: Optional[dict] = None,
 ) -> PointCloudCollisionCriterion:
     """Load `scene_objects` PLYs into NED-frame labeled clouds.
 
@@ -277,6 +334,10 @@ def _build_collision_criterion(
 
     # Stack gate-object points and other-object points separately,
     # converting from each PLY's authored frame to NED via the FrameGraph.
+    # Gate-labeled PLYs are rigid-transformed by the gate perturbation
+    # (if any) in their authored frame *before* the NED conversion so the
+    # collision check tracks the moved gate Gaussians the renderer shows.
+    from falsify.geometry import PointCloud
     gate_pts: list[np.ndarray] = []
     other_pts: list[np.ndarray] = []
     for name, entry in by_name.items():
@@ -287,7 +348,22 @@ def _build_collision_criterion(
             ply_path = (scene_dir / ply_path).resolve()
         frame = frame_graph.frame(entry["frame"])
         pc = read_ply(ply_path, frame)
-        # Convert the point cloud to NED in bulk.
+        if name in gate_objects and gate_deltas is not None:
+            # The deltas are authored in MOCAP. PLYs live in their own
+            # `entry["frame"]` (typically MOCAP). If it isn't MOCAP we'd
+            # need a frame conversion before+after — we don't support
+            # non-MOCAP gate-collision PLYs yet (none of the shipped
+            # scenes use one) so error out loudly.
+            if entry["frame"] != "mocap":
+                raise ValueError(
+                    f"gate perturbation requires gate scene_object {name!r} "
+                    f"to live in 'mocap'; got {entry['frame']!r}"
+                )
+            moved = _apply_gate_rigid_transform(
+                np.asarray(pc.points, dtype=np.float64),
+                gate_deltas,
+            )
+            pc = PointCloud(points=moved, frame=frame)
         pc_ned = frame_graph.convert(pc, to="ned")
         xyz = np.asarray(pc_ned.points, dtype=np.float64)
         if name in gate_objects:
@@ -308,7 +384,31 @@ def _build_collision_criterion(
     return PointCloudCollisionCriterion(body, labeled_clouds=labeled)
 
 
-def _build_miss_gate_criterion(miss_gate_cfg: dict) -> MissGateCriterion:
+def _apply_gate_rigid_transform(
+    points: np.ndarray,
+    gate_deltas: dict,
+) -> np.ndarray:
+    """Apply a (Δxyz, Δyaw about anchor) rigid transform in MOCAP to ``points``.
+
+    Mirrors `GateRigidPerturbation._build_edit`: rotation is about MOCAP +z
+    around the gate anchor, then translation by Δxyz. Used by the safety
+    layer to move aperture corners + collision PLYs onto the perturbed
+    gate without re-deriving them from the scene.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    anchor = np.asarray(gate_deltas["anchor_mocap"], dtype=np.float64)
+    dxyz = np.asarray(gate_deltas["delta_xyz_mocap"], dtype=np.float64)
+    dyaw = float(gate_deltas["delta_yaw_rad"])
+    c, s = np.cos(dyaw), np.sin(dyaw)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    return (pts - anchor) @ R.T + anchor + dxyz
+
+
+def _build_miss_gate_criterion(
+    miss_gate_cfg: dict,
+    *,
+    gate_deltas: Optional[dict] = None,
+) -> MissGateCriterion:
     corners = miss_gate_cfg.get("corners")
     if corners is None or len(corners) != 4:
         raise ValueError(
@@ -316,10 +416,38 @@ def _build_miss_gate_criterion(miss_gate_cfg: dict) -> MissGateCriterion:
             "ordered to trace the aperture rectangle"
         )
     corners_arr = np.asarray(corners, dtype=np.float64)
+    # Goal + progress fields are optional — if absent, the criterion
+    # degrades to the original geometric-only miss check.
+    goal = miss_gate_cfg.get("goal_position")
+    goal_arr = np.asarray(goal, dtype=np.float64) if goal is not None else None
+
+    # If a gate-perturbation rigid transform is in play, move corners +
+    # goal to match. We require corners_frame == mocap for this — the
+    # deltas are authored in mocap; any other frame would need explicit
+    # conversion which we haven't needed yet.
+    if gate_deltas is not None:
+        corners_frame = miss_gate_cfg.get("corners_frame", "mocap")
+        if corners_frame != "mocap":
+            raise ValueError(
+                f"gate perturbation requires miss_gate.corners_frame=='mocap', "
+                f"got {corners_frame!r}"
+            )
+        corners_arr = _apply_gate_rigid_transform(corners_arr, gate_deltas)
+        # The goal stays *in place* — we only move the aperture, not the
+        # hover-over-stuffed-animal goal. (The goal is task-defined, not
+        # gate-defined.) Skip transforming goal.
+
     return MissGateCriterion(
         corners_arr,
         frame_name=miss_gate_cfg.get("corners_frame", "mocap"),
         margin_m=float(miss_gate_cfg.get("margin_m", 0.0)),
+        goal_position=goal_arr,
+        goal_tolerance_m=float(miss_gate_cfg.get("goal_tolerance_m", 0.30)),
+        min_progress_window_s=(
+            float(miss_gate_cfg["min_progress_window_s"])
+            if miss_gate_cfg.get("min_progress_window_s") is not None else None
+        ),
+        min_progress_m=float(miss_gate_cfg.get("min_progress_m", 0.05)),
     )
 
 

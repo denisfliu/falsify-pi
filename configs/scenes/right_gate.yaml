@@ -14,9 +14,17 @@ gsplat_data_cwd: ../../data/gate_scenes_export/right_scene
 
 # Mission specification — all in MOCAP (joint mocap).
 # Right-gate AABB: x∈[0.09, 1.00], y∈[-1.40, -0.90], z∈[0.07, 1.95].
-start_position_mocap: [-0.50, -1.15, 1.50]
-goal_position_mocap:  [ 1.50, -1.15, 1.50]
-gate_position_mocap:  [ 0.54, -1.15, 1.50]
+#
+# `start_position_mocap` matches the v7 training distribution: every
+# synth_right_gate episode starts at (0, 0, 1.5) ± ~2 cm with yaw=0. The
+# previous "approach from -x at the gate's mean y" value (-0.5, -1.15, 1.5)
+# was 1.25 m off-distribution. See left_gate.yaml for the same note.
+start_position_mocap: [0.00, 0.00, 1.50]
+goal_position_mocap:  [1.50, -1.15, 1.50]
+gate_position_mocap:  [0.54, -1.15, 1.50]
+
+start_randomization:
+  half_widths_mocap: [0.05, 0.05, 0.05]
 
 frames:
   - { name: mocap, notes: "Joint mocap (z-up, origin at ArUco tag)." }
@@ -54,3 +62,20 @@ transforms:
 scene_objects:
   - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/right_gate.ply,  frame: mocap, color: [0.32, 0.55, 0.78] }
   - { name: table, ply: ../../data/gate_scenes_export/objects_final/right_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Published gate-region metadata. Same shape as left_gate.yaml. Numbers come
+# from data/gate_scenes_export/objects_final/objects_summary.json:right_gate.
+# AABB is widened by ~0.15 m in xy from objects_summary's tight box so we
+# catch the gate's fuzzy outer Gaussians; exclude_aabbs covers the table.
+# Plane normal: from plane_cut posts P1=(0.47,-1.24), P2=(0.11,-1.39) with
+# sign=-1 → (0.385, -0.923, 0) (faces back toward (0,0) approach).
+gate_region:
+  aabb_frame: mocap
+  aabb_min: [-0.06, -1.55, 0.05]
+  aabb_max: [ 1.15, -0.75, 2.05]
+  anchor:   [0.544, -1.147, 0.074]
+  normal:   [0.385, -0.923, 0.0]
+  include_aabbs: []
+  exclude_aabbs:
+    - { min: [1.27, -0.86, 0.02], max: [1.93, 0.39, 0.62] }   # the table
+  applies_to_scene_objects: [gate]

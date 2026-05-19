@@ -1,0 +1,14 @@
+# Recovery config for center_gate falsifications. See left_gate_mpc.yaml.
+#
+# The center_gate scene's gate Gaussians are at the moved (centered)
+# position via scene_edits; the course's waypoints (in mocap) already
+# target the new gate location, so plan_mpc threads through the right
+# aperture without any extra translation.
+
+course: configs/courses/through_center_gate_from_left.yaml
+planner: mpc
+trigger_failure_types:
+  - MISS_GATE
+  - COLLISION_GATE
+  - COLLISION_OTHER
+  - OUT_OF_BOUNDS

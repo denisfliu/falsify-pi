@@ -1,0 +1,19 @@
+# Recovery config for left_gate falsifications.
+#
+# When the failure detector fires on one of the listed types, the
+# orchestrator builds a CoursedMpcPlanner over `course` and produces a
+# dynamically-feasible recovery trajectory from `last_safe_state` to the
+# goal — threading through the gate aperture defined by the course.
+#
+# Triggers cover the falsification-relevant modes (drone missed the gate,
+# clipped it, hit something else, or left the working volume). Velocity /
+# tilt failures are sim instabilities — not falsifications — and don't
+# trigger recovery.
+
+course: configs/courses/through_left_gate.yaml
+planner: mpc                       # mpc | spline (spline = no acados)
+trigger_failure_types:
+  - MISS_GATE
+  - COLLISION_GATE
+  - COLLISION_OTHER
+  - OUT_OF_BOUNDS

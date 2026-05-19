@@ -1,0 +1,40 @@
+# Safety criteria for a left_gate VLA rollout. Mirror of
+# configs/safety/center_gate.yaml; aperture corners are the *original*
+# (unedited) left-gate posts from configs/falsification/smoke_collision.yaml.
+
+bounds_frame: mocap
+bounds_lower: [-1.0, -3.0, 0.2]
+bounds_upper: [ 4.0,  3.0, 3.0]
+max_speed: 10.0
+max_tilt_rad: 1.2
+
+drone_body:
+  half_extents: [0.175, 0.175, 0.075]
+
+collision:
+  enabled: true
+  gate_objects:  [gate]
+  other_objects: [table]
+
+# Left-gate aperture in MOCAP (posts at (0.65, 1.05) and (1.18, 0.45);
+# aperture height [0.20, 1.95]). Trace order matches the smoke_collision
+# convention: post-A bottom → post-B bottom → post-B top → post-A top.
+miss_gate:
+  corners_frame: mocap
+  corners:
+    - [0.65, 1.05, 0.20]
+    - [1.18, 0.45, 0.20]
+    - [1.18, 0.45, 1.95]
+    - [0.65, 1.05, 1.95]
+  margin_m: 0.0
+  # The unified gate-navigation check (modes b/c/d from MissGateCriterion):
+  # `goal_position` enables "reached goal without transit" + "stuck" detection.
+  # In the same frame as `corners_frame` (mocap here).
+  goal_position: [1.50, 0.70, 1.50]
+  goal_tolerance_m: 0.30
+  # Stuck check: drone must reduce distance to the current target (aperture
+  # centre before transit; goal after transit) by at least min_progress_m
+  # within min_progress_window_s seconds. Below that → MISS_GATE
+  # (pre-transit) or GOAL_NOT_REACHED (post-transit).
+  min_progress_window_s: 4.0
+  min_progress_m: 0.05

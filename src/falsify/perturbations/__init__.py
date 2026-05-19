@@ -9,7 +9,7 @@ from .base import (
 )
 from .action import PositionNoise, PositionBias, VelocityScale
 from .observation import ImageGaussianNoise, ImageBlur, StateNoise
-from .environment import StubEnvironmentPerturbation
+from .environment import StubEnvironmentPerturbation, GateRigidPerturbation
 
 __all__ = [
     "Perturbation",
@@ -17,5 +17,5 @@ __all__ = [
     "PerturbationSuite",
     "PositionNoise", "PositionBias", "VelocityScale",
     "ImageGaussianNoise", "ImageBlur", "StateNoise",
-    "StubEnvironmentPerturbation",
+    "StubEnvironmentPerturbation", "GateRigidPerturbation",
 ]

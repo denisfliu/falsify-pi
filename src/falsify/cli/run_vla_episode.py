@@ -194,12 +194,54 @@ def _dump_trajectory_with_scene(
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_PROMPT_REGISTRY = Path("configs/prompts/atomic_dataset_prompts.yaml")
+
+
+def _resolve_prompt(args: argparse.Namespace) -> str:
+    """Return the literal prompt string. Either `--prompt` (verbatim) or
+    `--prompt-name` (looked up in the registry) must be set."""
+    import yaml
+    if args.prompt is not None:
+        return args.prompt
+    registry_path = args.prompt_registry
+    if not registry_path.is_absolute():
+        repo_root = Path(__file__).resolve().parents[3]
+        registry_path = repo_root / registry_path
+    if not registry_path.is_file():
+        raise SystemExit(f"--prompt-name set but registry not found: {registry_path}")
+    registry = yaml.safe_load(registry_path.read_text()).get("prompts") or {}
+    if args.prompt_name not in registry:
+        known = ", ".join(sorted(registry)) or "(none)"
+        raise SystemExit(
+            f"--prompt-name {args.prompt_name!r} not in registry. "
+            f"Known: {known}. "
+            f"Refresh with `python scripts/build_prompt_registry.py`."
+        )
+    entry = registry[args.prompt_name]
+    return str(entry["task"]) if isinstance(entry, dict) else str(entry)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--scene", required=True, type=Path)
     parser.add_argument("--frame", required=True, type=Path,
                         help="Drone-frame YAML (e.g. configs/frames/carl_dual.yaml).")
-    parser.add_argument("--prompt", required=True, type=str)
+    prompt_group = parser.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt", type=str, default=None,
+                              help="Literal prompt string to send to the VLA.")
+    prompt_group.add_argument("--prompt-name", type=str, default=None,
+                              help="Short name resolved against the prompt "
+                                   "registry (default: "
+                                   "configs/prompts/atomic_dataset_prompts.yaml). "
+                                   "Keys come from `data/atomic_datasets/*/meta/"
+                                   "tasks.jsonl`. Run "
+                                   "`python scripts/build_prompt_registry.py "
+                                   "--datasets-dir data/atomic_datasets` to "
+                                   "refresh. Mutually exclusive with --prompt.")
+    parser.add_argument("--prompt-registry", default=_DEFAULT_PROMPT_REGISTRY, type=Path,
+                        help="Path to the prompt registry YAML used by "
+                             "--prompt-name. Repo-relative paths resolve from "
+                             "the repo root.")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--host", default="moraband")
     parser.add_argument("--port", type=int, default=8000)
@@ -227,7 +269,31 @@ def main(argv: list[str] | None = None) -> int:
                              "rollout on bounds / velocity / tilt / collision / "
                              "miss-gate. Without it, the rollout runs to "
                              "--horizon-s regardless.")
+    parser.add_argument("--recovery", type=Path, default=None,
+                        help="Optional recovery YAML. When set, engages the "
+                             "FALSIFICATION pipeline: on a triggering failure "
+                             "(MISS_GATE / COLLISION_* / OUT_OF_BOUNDS by "
+                             "default), the configured course-based MPC "
+                             "planner produces a recovery trajectory from "
+                             "the last-safe state. Without it, the run is "
+                             "EVALUATION-only — detector fires, rollout "
+                             "stops, no recovery planned.")
+    parser.add_argument("--perturbations", type=Path, default=None,
+                        help="Optional perturbations YAML "
+                             "(configs/perturbations/*.yaml). Wires a "
+                             "PerturbationSuite over the action, observation, "
+                             "and environment surfaces. Environment-surface "
+                             "concrete impls are stubbed pending Splat-MOVER; "
+                             "action + observation are live.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed for the rollout RNG. Drives the scene's "
+                             "`start_randomization` (and any future "
+                             "noise/perturbation samplers). Unset → fresh "
+                             "entropy each run; set → reproducible.")
     args = parser.parse_args(argv)
+    # Resolve `--prompt-name` to its literal task string. Downstream code
+    # treats `args.prompt` as the single source of truth.
+    args.prompt = _resolve_prompt(args)
 
     # Decide policy backend up-front so smoke checks load the right deps.
     use_pi_gateway = args.policy_config is not None
@@ -276,7 +342,10 @@ def main(argv: list[str] | None = None) -> int:
             gateway_url=policy_cfg["gateway_url"],
             api_key=policy_cfg.get("api_key", ""),
             execute_chunk_size=int(policy_cfg.get("execute_chunk_size", 25)),
-            prompt=policy_cfg.get("prompt", args.prompt),
+            # CLI --prompt wins: the user explicitly supplied it (required arg),
+            # so the YAML's prompt is just a default for un-flagged invocations
+            # (and a traceability anchor — what the YAML was built around).
+            prompt=args.prompt or policy_cfg.get("prompt", ""),
             hz=int(policy_cfg.get("hz", args.hz)),
             state_dim=int(policy_cfg.get("state_dim", 7)),
             action_dim=int(policy_cfg.get("action_dim", 7)),
@@ -346,15 +415,68 @@ def main(argv: list[str] | None = None) -> int:
               f"{'+collision' if safety_cfg.get('collision', {}).get('enabled') else ''}"
               f"{'+miss_gate' if safety_cfg.get('miss_gate') else ''})")
 
+    # Wire the recovery planner if --recovery was supplied (falsification
+    # pipeline). The recovery YAML names a course (or we resolve via the
+    # prompt registry) plus an optional planner kind and trigger-failure
+    # type filter.
+    recovery_factory = None
+    recovery_triggers = None
+    recovery_cfg: dict = {}
+    if args.recovery is not None:
+        from falsify.recovery import CoursedMpcPlanner
+        from falsify.safety import FailureType
+
+        recovery_cfg = load_yaml(args.recovery)
+        course_path = recovery_cfg.get("course")
+        if course_path is None:
+            # Resolve via the prompt registry's course mapping (TODO if added).
+            raise SystemExit(
+                "--recovery YAML must set `course:` (no prompt-registry course "
+                "fallback yet). Add e.g. "
+                "`course: configs/courses/through_left_gate.yaml`."
+            )
+        if not Path(course_path).is_absolute():
+            course_path = Path(__file__).resolve().parents[3] / course_path
+        planner_kind = recovery_cfg.get("planner", "mpc")
+        triggers_raw = recovery_cfg.get(
+            "trigger_failure_types",
+            ["MISS_GATE", "COLLISION_GATE", "COLLISION_OTHER", "OUT_OF_BOUNDS"],
+        )
+        recovery_triggers = {FailureType[name] for name in triggers_raw}
+
+        def recovery_factory(fg2, _episode_recovery_cfg):
+            return CoursedMpcPlanner(
+                course_path=course_path,
+                frame_graph=fg2,
+                planner=planner_kind,
+                prompt=args.prompt,
+            )
+        print(f"[run] recovery: course={course_path} planner={planner_kind} "
+              f"triggers={sorted(t.name for t in recovery_triggers)}")
+
+    # Optional perturbation suite. Same YAML schema and factory as smoke_test
+    # so observation+action surfaces stay symmetric across CLIs.
+    perturbations_factory = None
+    if args.perturbations is not None:
+        from falsify.cli.smoke_test import build_perturbations_factory
+        perturbations_factory = build_perturbations_factory(args.perturbations)
+        print(f"[run] perturbations: {args.perturbations}")
+
     print(f"[run] rolling out for up to {args.horizon_s}s @ {effective_hz}Hz, "
           f"chunks of {effective_chunk} steps "
-          f"(backend={'pi_gateway' if use_pi_gateway else 'openpi'})")
+          f"(backend={'pi_gateway' if use_pi_gateway else 'openpi'}, "
+          f"pipeline={'falsification' if recovery_factory else 'evaluation'})")
+    rng = np.random.default_rng(args.seed)
     t0 = time.time()
     episode = run_episode(
         ec,
         policy_factory=policy_factory,
-        renderer=renderer.render,
+        renderer=renderer,
         detector_factory=detector_factory,
+        recovery_factory=recovery_factory,
+        recovery_triggers=recovery_triggers,
+        perturbations_factory=perturbations_factory,
+        rng=rng,
     )
     print(f"[run] rollout finished in {time.time() - t0:.1f}s "
           f"({len(episode.trace.states)} states)")
@@ -390,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         "actions_per_chunk": effective_chunk,
         "horizon_s": args.horizon_s,
         "image_size": args.image_size,
+        "seed": args.seed,
+        "start_ned_resolved": episode.trace.states[0].pos.xyz.tolist() if episode.trace.states else None,
         "policy_backend": "pi_gateway" if use_pi_gateway else "openpi",
         "policy_config": str(args.policy_config) if use_pi_gateway else None,
         "policy_traceability": pgcfg.traceability if use_pi_gateway else None,
@@ -404,7 +528,54 @@ def main(argv: list[str] | None = None) -> int:
         "ply_paths": {f: str(p) for f, p in plys.items()},
         "flythrough_path": str(flythrough_path) if flythrough_path else None,
         "vla_io_dir": str(record_dir),
+        "perturbations": episode.metadata.get("perturbations"),
     }
+    # 4. Recovery trajectory (falsification pipeline). Persisted as both a
+    # Trajectory NPZ (so plot_rollout_trajectories.py can overlay it) and
+    # a summary block.
+    if episode.recovery_trajectory is not None:
+        from falsify.training import save_trajectory
+        from falsify.training.trajectory import Trajectory as TrainingTrajectory
+        rt = episode.recovery_trajectory
+        # episode.recovery_trajectory is a geometry.Trajectory; re-wrap as a
+        # training.Trajectory NPZ for downstream compat.
+        quats = rt.quaternions if rt.quaternions is not None else np.tile(
+            np.array([0., 0., 0., 1.]), (len(rt.positions), 1),
+        )
+        save_trajectory(
+            out_dir / "recovery_trajectory.npz",
+            TrainingTrajectory(
+                times=rt.times,
+                positions_ned=rt.positions,
+                quaternions_xyzw=quats,
+                prompt=args.prompt,
+                source="recovery",
+            ),
+        )
+        seed_info = (episode.metadata or {}).get("recovery_seed") or {}
+        summary["recovery"] = {
+            "course": str(course_path),
+            "planner": planner_kind,
+            "triggers": sorted(t.name for t in recovery_triggers),
+            "fired": True,
+            "trajectory_npz": str(out_dir / "recovery_trajectory.npz"),
+            "n_states": int(len(rt.positions)),
+            "duration_s": float(rt.times[-1] - rt.times[0]),
+            "seed_step": seed_info.get("step"),
+            "seed_bias": seed_info.get("bias"),
+            "n_safe_states": seed_info.get("n_safe"),
+        }
+    elif args.recovery is not None:
+        summary["recovery"] = {
+            "course": str(course_path),
+            "planner": planner_kind,
+            "triggers": sorted(t.name for t in recovery_triggers),
+            "fired": False,
+            "reason": (
+                "no failure" if episode.failure is None
+                else f"failure type {episode.failure.failure_type.name} not in triggers"
+            ),
+        }
     (out_dir / "episode_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\n[done] {out_dir / 'episode_summary.json'}")
 

@@ -30,6 +30,16 @@ export CC=/usr/bin/gcc-11
 export CXX=/usr/bin/g++-11
 export NVCC_PREPEND_FLAGS="-ccbin /usr/bin/g++-11"
 
+# acados (FiGS' OCP solver) — falsify's submodule isn't built; SousVide's is.
+# `acados_template` Python finds the prebuilt .so / t_renderer via these env
+# vars. Override $ACADOS_SOURCE_DIR if you build falsify's own copy.
+: "${ACADOS_SOURCE_DIR:=/home/dfliu/code/SousVide/external/FiGS/acados}"
+export ACADOS_SOURCE_DIR
+case ":${LD_LIBRARY_PATH:-}:" in
+  *":$ACADOS_SOURCE_DIR/lib:"*) ;;
+  *) export LD_LIBRARY_PATH="$ACADOS_SOURCE_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+esac
+
 # Also keep the PYTHONPATH workaround for the symlinked SousVide venv that
 # doesn't register falsify as editable. Idempotent on repeated sourcing.
 _FALSIFY_REPO="${BASH_SOURCE[0]:-${(%):-%x}}"

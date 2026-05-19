@@ -1,18 +1,18 @@
 # Safety criteria for a center_gate VLA rollout.
 #
 # Stop conditions:
-#   - drone leaves the working volume (BoundsCriterion, mocap-frame box)
-#   - velocity > 10 m/s   (VelocityCriterion)
-#   - tilt   > 1.2 rad    (TiltCriterion, ≈ 69°)
-#   - OBB intersects the gate or table point cloud (PointCloudCollisionCriterion)
+#   - drone leaves the working volume   (BoundsCriterion, mocap-frame box)
+#   - velocity > 10 m/s                 (VelocityCriterion)
+#   - tilt   > 1.2 rad                  (TiltCriterion, ≈ 69°)
+#   - OBB intersects the gate or table  (PointCloudCollisionCriterion)
+#   - crossing the gate plane outside the aperture rectangle (MissGateCriterion)
 #
-# miss_gate is intentionally NOT wired here yet — the aperture corners
-# for the *center* gate need to be derived from the `scene_edits`
-# transform in configs/scenes/center_gate.yaml (the gate Gaussians get
-# rotated + translated from the original left_gate aperture). Until that
-# is computed, omitting miss_gate is the safe default — the collision
-# criterion still catches the obvious failure mode (clipping the gate
-# posts).
+# The miss_gate corners below were derived by transporting the left_gate
+# aperture (from configs/falsification/smoke_collision.yaml) through the
+# center_gate scene's `scene_edits` rigid transform via
+# `apply_edits_to_scene_object`. The transform takes the left-gate posts
+# from (≈ (0.65, 1.05) and (1.18, 0.45) in MOCAP-xy, normal (0.749, 0.663))
+# to the new center anchor (2.5, -0.25) with normal (0, -1, 0).
 
 bounds_frame: mocap
 bounds_lower: [-1.0, -3.0, 0.2]
@@ -28,3 +28,21 @@ collision:
   enabled: true
   gate_objects:  [gate]    # PLY name from configs/scenes/center_gate.yaml::scene_objects
   other_objects: [table]
+
+# CENTER gate aperture corners (MOCAP). Drone approaches from +y (start
+# at y=0) → -y (gate plane at y≈-0.328). Corners trace the rectangle so
+# corners[1]-corners[0] (the "u" edge) is the post-to-post span at low z,
+# and corners[3]-corners[0] (the "v" edge) is the vertical span at post-A.
+miss_gate:
+  corners_frame: mocap
+  corners:
+    - [3.156, -0.328, 0.125]   # post-A, bottom
+    - [2.356, -0.327, 0.125]   # post-B, bottom
+    - [2.356, -0.327, 1.875]   # post-B, top
+    - [3.156, -0.328, 1.875]   # post-A, top
+  margin_m: 0.0
+  # See configs/safety/left_gate.yaml for the meaning of these fields.
+  goal_position: [1.525, -0.615, 1.0]
+  goal_tolerance_m: 0.30
+  min_progress_window_s: 4.0
+  min_progress_m: 0.05
