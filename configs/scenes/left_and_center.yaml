@@ -1,0 +1,98 @@
+# left_and_center — compositional scene used by the Phase-3 eval.
+#
+# Inherits the LEFT scene's gsplat (same as left_gate.yaml) and adds a
+# duplicate of the left gate placed at the center anchor (2.75, -0.25, 0)
+# with mocap +y as its plane normal. Net result: TWO gates in the scene
+# — the original left gate (where the trained checkpoint expects it) AND
+# a center copy. The drone is asked to fly through the left gate first,
+# then through the center gate, then hover over the stuffed animal.
+#
+# All other frame / camera / start config matches left_gate.yaml so the
+# policy + sensor pipeline is unchanged.
+
+scene_key: left_and_center
+gsplat_path: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901
+gsplat_config_yml: ../../data/gate_scenes_export/left_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_153901/config.yml
+gsplat_data_cwd: ../../data/gate_scenes_export/left_scene
+
+# Start matches the v7 training distribution. The goal is the same hover
+# pose used by every gate task (stuffed animal on the table).
+start_position_mocap: [0.00, 0.00, 1.50]
+goal_position_mocap:  [1.525, -0.615, 1.0]
+# `gate_position_mocap` is informational; the eval / safety layer reads
+# the two aperture corner sets from the safety YAML, not this field.
+gate_position_mocap:  [0.86, 0.69, 1.50]
+
+start_randomization:
+  half_widths_mocap: [0.05, 0.05, 0.05]
+
+frames:
+  - { name: mocap, notes: "Joint mocap (z-up)." }
+  - { name: ned,   notes: "FiGS dynamics frame; perm5 of mocap (diag(1,-1,-1))." }
+  - { name: ns,    notes: "Nerfstudio-internal for the LEFT splat." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing camera optical frame." }
+  - { name: cam_downward, notes: "Downward-facing camera optical frame." }
+
+transforms:
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, left_gate_new, joint_mocap_to_nerf_4x4] }
+  - { src: cam_body, dst: cam_forward, type: se3_inline,
+      R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
+      t: [0.03, -0.01, 0.10] }
+  - { src: cam_body, dst: cam_downward, type: se3_inline,
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+# scene_objects mirror left_gate.yaml. `gate` is listed in the duplicate
+# edit's applies_to_scene_objects so the inspector + collision layer see
+# BOTH gates (original left + center copy) when reading this PLY.
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/left_gate.ply,  frame: mocap, color: [0.72, 0.32, 0.32] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/left_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Duplicate the left gate's Gaussians and append a copy at the center
+# anchor. Same AABB + include/exclude pattern as center_gate.yaml's
+# move_gate edit; the only difference is the edit `type` so the applier
+# COPIES rather than moves.
+scene_edits:
+  - name: duplicate_left_gate_to_center
+    type: duplicate_aabb
+    target_aabb_frame: mocap
+    target_aabb_min: [0.36, 0.12, 0.05]
+    target_aabb_max: [1.36, 1.27, 2.05]
+    include_aabbs:
+      - { min: [1.175, 0.246, 0.054], max: [1.219, 0.319, 0.689] }
+    exclude_aabbs:
+      - { min: [1.20, -0.85, 0.02], max: [1.85, 0.40, 0.62] }   # left_table
+    transform_frame: mocap
+    transform:
+      source_anchor: [0.861, 0.694, 0.075]
+      target_anchor: [2.75, -0.25, 0.0]
+      source_normal: [0.749, 0.663, 0.0]
+      target_normal: [0.0, -1.0, 0.0]
+    applies_to_scene_objects: [gate]
+
+# Published per-gate AABB metadata for the compositional safety layer.
+# OrderedMissGateCriterion uses these for AABB-transit latching in
+# eval_stop_mode (gate-1 must latch before gate-2 can). Same convention
+# as left_gate.yaml::gate_region — numbers from objects_summary.json
+# (gate_1 = the left gate at its original pose; gate_2 = the duplicate
+# at the center anchor, AABB lifted by the duplicate_aabb edit).
+gate_regions:
+  - name: gate_1
+    aabb_frame: mocap
+    aabb_min: [0.36, 0.12, 0.05]
+    aabb_max: [1.36, 1.27, 2.05]
+    anchor:   [0.861, 0.694, 0.075]
+    normal:   [0.749, 0.663, 0.0]
+  - name: gate_2
+    aabb_frame: mocap
+    aabb_min: [2.25, -0.69, 0.05]
+    aabb_max: [3.25,  0.16, 2.05]
+    anchor:   [2.75, -0.25, 0.0]
+    normal:   [0.0, -1.0, 0.0]

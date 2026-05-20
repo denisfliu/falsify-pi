@@ -114,3 +114,14 @@ gate_region:
   exclude_aabbs:
     - { min: [1.20, -0.85, 0.02], max: [1.85, 0.40, 0.62] }   # the table
   applies_to_scene_objects: [gate]
+
+# Obstacles the perturbation sampler must avoid pushing the gate into.
+# AABBs in MOCAP — same authoritative source as gate_region (objects_summary.json).
+# `GateRigidPerturbation` rejection-samples until the perturbed gate AABB
+# doesn't grow its overlap with any obstacle beyond `max_overlap_growth_factor`
+# (default 1.5) times nominal.
+obstacles:
+  - name: table
+    aabb_frame: mocap
+    aabb_min: [1.20, -0.83, 0.05]
+    aabb_max: [1.85,  0.40, 0.60]

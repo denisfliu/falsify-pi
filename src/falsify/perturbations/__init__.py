@@ -10,6 +10,10 @@ from .base import (
 from .action import PositionNoise, PositionBias, VelocityScale
 from .observation import ImageGaussianNoise, ImageBlur, StateNoise
 from .environment import StubEnvironmentPerturbation, GateRigidPerturbation
+from .gate_obstacle_check import (
+    is_perturbation_obstacle_safe,
+    sample_obstacle_safe_perturbation,
+)
 
 __all__ = [
     "Perturbation",
@@ -18,4 +22,5 @@ __all__ = [
     "PositionNoise", "PositionBias", "VelocityScale",
     "ImageGaussianNoise", "ImageBlur", "StateNoise",
     "StubEnvironmentPerturbation", "GateRigidPerturbation",
+    "is_perturbation_obstacle_safe", "sample_obstacle_safe_perturbation",
 ]

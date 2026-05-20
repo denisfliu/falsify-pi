@@ -1,0 +1,49 @@
+# CEM optimization for COLLISION_GATE — iteratively refits a multivariate
+# Gaussian over the 6-d perturbation vector (start_dx/dy/dz, gate_dx/dy,
+# gate_dyaw) so that samples from the converged distribution produce more
+# gate collisions than uniform sampling over the same box.
+#
+# Bounds match `configs/eval_suite/baseline_cem_box.yaml` exactly — that
+# scenario is the uniform-baseline arm of the A/B test. Anything outside
+# this admissible box is considered out-of-scope for the comparison
+# (gates that levitate, drone starts in another room, etc.).
+#
+# Pipeline:
+#   1. python scripts/run_cem_campaign.py --cem-config configs/cem/collision_gate.yaml ... \
+#          --out runs/cem_campaigns/collision_gate_v0
+#      → writes runs/cem_campaigns/collision_gate_v0/<scene>/converged_distribution.json
+#
+#   2. python scripts/generate_eval_bundles.py \
+#          --scenario configs/eval_suite/cem_collision_gate_exploit.yaml
+#      → bundle that samples from converged_distribution.json
+#
+#   3. python scripts/run_eval_campaign.py \
+#          --scenario configs/eval_suite/cem_collision_gate_exploit.yaml ...
+#
+#   4. Compare its campaign_summary.json against the matched-box
+#      uniform baseline (configs/eval_suite/baseline_cem_box.yaml).
+
+name: collision_gate_v0
+target_failure_type: COLLISION_GATE     # one of COLLISION_GATE | COLLISION_OTHER
+                                         #         | MISS_GATE       | GOAL_NOT_REACHED
+
+# The admissible perturbation box. Same as the baseline arm of the A/B test.
+bounds:
+  start_half_widths_mocap:  [0.05, 0.05, 0.05]    # ±5 cm drone start jitter
+  gate_offset_half_widths:  [0.10, 0.10, 0.0]     # ±10 cm gate xy; z PINNED to 0
+  gate_yaw_half_width_rad:  0.17453               # ±10° gate yaw
+
+cem:
+  n_iters:            8
+  n_samples_per_iter: 30
+  elite_frac:         0.25       # top 8 of 30 seed the next iter's fit
+  cov_shrink:         0.1        # 10% prior weight when refitting Σ
+  seed:               0          # per-scene RNG = hash((seed, scene_key))
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  left_gate
+    safety:       configs/safety/left_gate.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  right_gate
+    safety:       configs/safety/right_gate.yaml

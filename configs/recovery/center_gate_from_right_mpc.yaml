@@ -1,0 +1,13 @@
+# Recovery config for center_gate `center_from_right` evaluation entries.
+# Same scene file as center_gate_mpc.yaml (gate Gaussians moved to the
+# centered anchor); only difference is the recovery course, which threads
+# the aperture as if approaching from the right-scene's natural direction.
+
+course: configs/courses/through_center_gate_from_right.yaml
+planner: mpc
+trigger_failure_types:
+  - MISS_GATE
+  - COLLISION_GATE
+  - COLLISION_OTHER
+  - OUT_OF_BOUNDS
+  - GOAL_NOT_REACHED

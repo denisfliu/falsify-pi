@@ -350,6 +350,37 @@ class TiltCriterion(SafetyCriterion):
         return None
 
 
+def _aperture_geometry(corners: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """Derive (centre, u, v, n, hu, hv) from a (4, 3) aperture-corner list.
+
+    Enforces planarity and orthogonality of the two adjacent edges:
+    ``corners[1] - corners[0]`` and ``corners[3] - corners[0]``. Shared by
+    `MissGateCriterion` and `OrderedMissGateCriterion`.
+    """
+    if corners.shape != (4, 3):
+        raise ValueError(
+            f"corners must be (4, 3), got {corners.shape}; pass them in the "
+            "order they trace the aperture rectangle"
+        )
+    centre = corners.mean(axis=0)
+    e1 = corners[1] - corners[0]
+    e2 = corners[3] - corners[0]
+    if abs(float(np.dot(e1, e2))) > 1e-4 * (np.linalg.norm(e1) * np.linalg.norm(e2)):
+        raise ValueError(
+            "corner order must trace a rectangle: corners[1]-corners[0] "
+            "and corners[3]-corners[0] should be orthogonal adjacent edges"
+        )
+    u = e1 / np.linalg.norm(e1)
+    v = e2 / np.linalg.norm(e2)
+    n = np.cross(u, v)
+    n /= np.linalg.norm(n)
+    if abs(float(np.dot(corners[2] - corners[0], n))) > 1e-4:
+        raise ValueError("aperture corners are not coplanar")
+    hu = 0.5 * float(np.linalg.norm(e1))
+    hv = 0.5 * float(np.linalg.norm(e2))
+    return centre, u, v, n, hu, hv
+
+
 class MissGateCriterion(SafetyCriterion):
     """Catch every way the drone fails to navigate the gate.
 
@@ -397,6 +428,9 @@ class MissGateCriterion(SafetyCriterion):
         goal_tolerance_m: float = 0.30,
         min_progress_window_s: Optional[float] = None,
         min_progress_m: float = 0.05,
+        eval_stop_mode: bool = False,
+        transit_aabb_min: Optional[np.ndarray] = None,
+        transit_aabb_max: Optional[np.ndarray] = None,
     ) -> None:
         corners = np.asarray(corners, dtype=np.float64)
         if corners.shape != (4, 3):
@@ -442,9 +476,44 @@ class MissGateCriterion(SafetyCriterion):
             if min_progress_window_s is not None else None
         )
         self.min_progress_m = float(min_progress_m)
+        # When eval_stop_mode is True, this criterion stops being a
+        # MISS_GATE *classifier* and becomes a pure stop-signal:
+        #   - skip mode (a) plane-crossing-outside-aperture (the bug)
+        #   - on goal proximity, fire FailureType.GOAL_REACHED (success-stop)
+        #     regardless of whether the drone "transited" by the plane-cross
+        #     heuristic. Final MISS_GATE / SUCCESS classification is decided
+        #     post-hoc by `falsify.safety.posthoc.classify_trajectory_posthoc`
+        #     using the gate's MOCAP AABB.
+        #   - stuck-pre-transit still fires MISS_GATE (stop signal); post-hoc
+        #     reclassifies based on whether any state was inside the gate AABB.
+        self.eval_stop_mode = bool(eval_stop_mode)
+        # When `transit_aabb_*` are provided, the criterion tracks
+        # AABB-containment of the current state per step. In
+        # `eval_stop_mode`, `GOAL_REACHED` only fires *after* the drone has
+        # entered the AABB at least once. Without that gate, an early
+        # graze of the 10cm goal sphere before the gate crossing would cut
+        # off a still-valid approach. With AABB transit tracked here at
+        # runtime, post-hoc on `GOAL_REACHED` always implies SUCCESS.
+        self._transit_aabb_min: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_min, dtype=np.float64)
+            if transit_aabb_min is not None else None
+        )
+        self._transit_aabb_max: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_max, dtype=np.float64)
+            if transit_aabb_max is not None else None
+        )
+        if (self._transit_aabb_min is None) != (self._transit_aabb_max is None):
+            raise ValueError(
+                "transit_aabb_min and transit_aabb_max must both be provided "
+                "or both omitted"
+            )
         # State.
         self._prev_xyz: Optional[np.ndarray] = None
         self._transited: bool = False
+        # Flipped True the first step the drone's MOCAP position falls
+        # inside `transit_aabb_*`. Used by eval_stop_mode to gate
+        # GOAL_REACHED so we don't stop a pre-gate approach.
+        self._ever_inside_aabb: bool = False
         # Time at which the drone first transited the aperture. Used by
         # the recovery seed sampler to scope its draw to post-transit
         # states when failure mode is GOAL_NOT_REACHED.
@@ -461,6 +530,7 @@ class MissGateCriterion(SafetyCriterion):
         self._prev_xyz = None
         self._transited = False
         self._transit_t = None
+        self._ever_inside_aabb = False
         self._progress.clear()
 
     def check(self, state_in_frame: DroneState) -> Optional[Violation]:
@@ -484,8 +554,26 @@ class MissGateCriterion(SafetyCriterion):
         prev = self._prev_xyz
         self._prev_xyz = xyz
 
+        # ---- AABB containment latch -----------------------------------
+        # If a transit AABB is configured, set `_ever_inside_aabb` the
+        # first step the drone is inside it. `eval_stop_mode` reads this
+        # flag (plus the current-step `inside_now` below) to decide
+        # whether GOAL_REACHED is allowed to fire.
+        inside_now = False
+        if self._transit_aabb_min is not None:
+            inside_now = bool(
+                (xyz >= self._transit_aabb_min).all()
+                and (xyz <= self._transit_aabb_max).all()
+            )
+            if inside_now and not self._ever_inside_aabb:
+                self._ever_inside_aabb = True
+
         # ---- (a) plane-crossing check (only meaningful pre-transit) -----
-        if prev is not None and not self._transited:
+        # Disabled in eval_stop_mode — classification is post-hoc, and the
+        # in-flight rectangle check was firing false positives when the
+        # policy's natural arc clipped the aperture plane outside the
+        # tight rectangle (notably in center_gate).
+        if prev is not None and not self._transited and not self.eval_stop_mode:
             s0 = float(np.dot(prev - self.centre, self.n))
             s1 = float(np.dot(xyz - self.centre, self.n))
             if s0 != s1 and s0 * s1 <= 0.0:
@@ -524,8 +612,49 @@ class MissGateCriterion(SafetyCriterion):
 
         dist_to_goal = float(np.linalg.norm(xyz - self.goal_xyz))
 
-        # (b) Reached goal proximity without transiting → MISS_GATE.
-        if (not self._transited) and dist_to_goal <= self.goal_tolerance_m:
+        # ---- goal-proximity stop ---------------------------------------
+        # In `eval_stop_mode`, fire GOAL_REACHED on goal proximity ONLY
+        # when ALL three conditions hold:
+        #   (i)  drone has been inside the gate AABB at least once
+        #        (`_ever_inside_aabb`)
+        #   (ii) drone is NOT currently inside the AABB (post-transit hover,
+        #        not mid-passage about to collide with a post)
+        #   (iii) drone is within `goal_tolerance_m` of the goal
+        # Without (ii) the loose tolerance would mask collisions: a drone
+        # mid-AABB but within goal-prox sphere gets stopped before the
+        # collision check fires a step later.
+        # If no transit AABB is configured we fall back to the legacy
+        # "any goal-proximity stops" behavior (purely goal-distance based).
+        gate_aabb_required = self._transit_aabb_min is not None
+        transit_ok = (not gate_aabb_required) or self._ever_inside_aabb
+        outside_aabb = (not gate_aabb_required) or (not inside_now)
+        if (self.eval_stop_mode
+                and transit_ok
+                and outside_aabb
+                and dist_to_goal <= self.goal_tolerance_m):
+            return Violation(
+                description=(
+                    f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                    f"≤ {self.goal_tolerance_m:.3f} m); stopping rollout — "
+                    f"post-hoc decides SUCCESS vs SKIPPED_GATE"
+                ),
+                value=dist_to_goal,
+                threshold=self.goal_tolerance_m,
+                failure_type=FailureType.GOAL_REACHED,
+                extra={"mode": "goal_reached",
+                       "dist_to_goal": dist_to_goal,
+                       "transit_time": self._transit_t},
+            )
+
+        # (b) Legacy: reached goal proximity without transiting → MISS_GATE.
+        # Disabled in eval_stop_mode — the new pre-transit goal-proximity
+        # logic above lets the rollout keep running, and post-hoc decides
+        # the final outcome. Leaving mode (b) on while loosening
+        # `goal_tolerance_m` would cause it to fire from start because the
+        # drone may begin inside the now-large tolerance sphere.
+        if (not self.eval_stop_mode
+                and not self._transited
+                and dist_to_goal <= self.goal_tolerance_m):
             return Violation(
                 description=(
                     f"drone reached goal proximity (d={dist_to_goal:.3f} m "
@@ -546,9 +675,14 @@ class MissGateCriterion(SafetyCriterion):
             return None
 
         # (c)/(d) Stuck check. Track distance to the *relevant* target.
+        # In eval_stop_mode the target is always the goal (no transit-based
+        # target switching — transit detection is post-hoc).
         if self.min_progress_window_s is None:
             return None
-        target_xyz = self.centre if not self._transited else self.goal_xyz
+        if self.eval_stop_mode:
+            target_xyz = self.goal_xyz
+        else:
+            target_xyz = self.centre if not self._transited else self.goal_xyz
         dist_to_target = float(np.linalg.norm(xyz - target_xyz))
         t_now = float(state.t)
         self._progress.append((t_now, dist_to_target))
@@ -596,4 +730,425 @@ class MissGateCriterion(SafetyCriterion):
                            "dist_to_goal": dist_to_target,
                            "transit_time": self._transit_t},
                 )
+        return None
+
+
+class OrderedMissGateCriterion(SafetyCriterion):
+    """Two-gate compositional aperture check with strict ordering.
+
+    The drone must transit ``corners_1`` BEFORE any progress toward
+    ``corners_2`` counts. Emits the same failure taxonomy as
+    `MissGateCriterion` but with explicit gate identity in the violation
+    extras (``which_gate``: ``"gate_1"`` / ``"gate_2"``).
+
+    State progression:
+
+      ``pre_gate_1`` → (transit gate 1) → ``pre_gate_2`` → (transit gate 2)
+      → ``post_gate_2``.
+
+    Failure modes:
+
+    - ``MISS_GATE`` (``which_gate=gate_1``): plane crossed outside gate-1
+      aperture, OR no progress to gate-1 centre, OR reached goal proximity
+      before transiting gate 1 (skipped gate 1 entirely).
+    - ``MISS_GATE`` (``which_gate=gate_2``): same three sub-modes for gate
+      2 after gate-1 transit. Reached-goal-without-gate-2 also fires
+      ``MISS_GATE`` (not ``GOAL_NOT_REACHED``) — skipping a gate is a
+      gate-miss, not a goal failure.
+    - ``GOAL_NOT_REACHED``: both gates transited but the drone stalled
+      before reaching ``goal_position`` (stuck-after-gate-2).
+
+    The progress window's distance metric tracks the *current* target,
+    which switches from gate-1 centre → gate-2 centre → goal as transits
+    happen. Each switch clears the progress window so a slow approach to
+    one target doesn't trigger a false stuck-report for the next.
+
+    `eval_stop_mode` and `transit_aabb_*` are intentionally NOT yet
+    supported here — compositional eval-mode success classification is a
+    later concern (Phase 3.2).
+    """
+
+    name: str = "ordered_miss_gate"
+
+    def __init__(
+        self,
+        corners_1: np.ndarray,
+        corners_2: np.ndarray,
+        *,
+        frame_name: str = "mocap",
+        margin_m: float = 0.0,
+        goal_position: Optional[np.ndarray] = None,
+        goal_tolerance_m: float = 0.30,
+        min_progress_window_s: Optional[float] = None,
+        min_progress_m: float = 0.05,
+        eval_stop_mode: bool = False,
+        transit_aabb_1_min: Optional[np.ndarray] = None,
+        transit_aabb_1_max: Optional[np.ndarray] = None,
+        transit_aabb_2_min: Optional[np.ndarray] = None,
+        transit_aabb_2_max: Optional[np.ndarray] = None,
+    ) -> None:
+        c1 = np.asarray(corners_1, dtype=np.float64)
+        c2 = np.asarray(corners_2, dtype=np.float64)
+        self.corners_1 = c1
+        self.corners_2 = c2
+        (self.centre_1, self.u_1, self.v_1, self.n_1,
+         self.hu_1, self.hv_1) = _aperture_geometry(c1)
+        (self.centre_2, self.u_2, self.v_2, self.n_2,
+         self.hu_2, self.hv_2) = _aperture_geometry(c2)
+        self.operates_in_frame = frame_name
+        self.margin_m = float(margin_m)
+        self.goal_xyz: Optional[np.ndarray] = (
+            np.asarray(goal_position, dtype=np.float64)
+            if goal_position is not None else None
+        )
+        self.goal_tolerance_m = float(goal_tolerance_m)
+        self.min_progress_window_s: Optional[float] = (
+            float(min_progress_window_s)
+            if min_progress_window_s is not None else None
+        )
+        self.min_progress_m = float(min_progress_m)
+        # eval_stop_mode mirrors MissGateCriterion's design — disables
+        # the in-flight plane-cross-outside-aperture check (which was
+        # killing compositional trials whose natural arc clipped either
+        # gate's plane outside the strict rectangle), and instead uses
+        # per-gate AABB transit latches to drive (a) goal-proximity stop
+        # gating and (b) the stuck-target switcher. See the module
+        # docstring on eval-mode semantics; configure per scene via
+        # `safety_cfg.ordered_miss_gate.eval_stop_mode`.
+        self.eval_stop_mode = bool(eval_stop_mode)
+        self._transit_aabb_1_min: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_1_min, dtype=np.float64)
+            if transit_aabb_1_min is not None else None
+        )
+        self._transit_aabb_1_max: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_1_max, dtype=np.float64)
+            if transit_aabb_1_max is not None else None
+        )
+        self._transit_aabb_2_min: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_2_min, dtype=np.float64)
+            if transit_aabb_2_min is not None else None
+        )
+        self._transit_aabb_2_max: Optional[np.ndarray] = (
+            np.asarray(transit_aabb_2_max, dtype=np.float64)
+            if transit_aabb_2_max is not None else None
+        )
+        if (self._transit_aabb_1_min is None) != (self._transit_aabb_1_max is None):
+            raise ValueError("transit_aabb_1_min/max must both be provided or both omitted")
+        if (self._transit_aabb_2_min is None) != (self._transit_aabb_2_max is None):
+            raise ValueError("transit_aabb_2_min/max must both be provided or both omitted")
+        # State.
+        self._prev_xyz: Optional[np.ndarray] = None
+        self._transited_1: bool = False
+        self._transited_2: bool = False
+        self._transit_t_1: Optional[float] = None
+        self._transit_t_2: Optional[float] = None
+        # AABB latches (used by eval_stop_mode; harmless when off).
+        self._ever_inside_aabb_1: bool = False
+        self._ever_inside_aabb_2: bool = False
+        from collections import deque
+        self._progress: "deque[tuple[float, float]]" = deque()
+
+    # ---- overrides -----------------------------------------------------
+
+    def reset(self) -> None:
+        self._prev_xyz = None
+        self._transited_1 = False
+        self._transited_2 = False
+        self._transit_t_1 = None
+        self._transit_t_2 = None
+        self._ever_inside_aabb_1 = False
+        self._ever_inside_aabb_2 = False
+        self._progress.clear()
+
+    def _phase(self) -> str:
+        """Compositional rollout phase, derived from whichever transit
+        signal the current mode uses (AABB latches in eval_stop_mode;
+        plane-cross flags otherwise). Stamped into Violation.extra so
+        the campaign aggregate can show which-gate-was-passed breakdowns.
+        """
+        if self.eval_stop_mode and self._transit_aabb_1_min is not None:
+            t1 = self._ever_inside_aabb_1
+            t2 = self._ever_inside_aabb_2
+        else:
+            t1 = self._transited_1
+            t2 = self._transited_2
+        if not t1:
+            return "pre_gate_1"
+        if not t2:
+            return "between_gates"
+        return "post_gate_2"
+
+    def check(self, state_in_frame: DroneState) -> Optional[Violation]:
+        # All the logic needs `prev_xyz`; see `check_with_graph`.
+        return None
+
+    def check_with_graph(
+        self, state: DroneState, frame_graph: FrameGraph
+    ) -> Optional[Violation]:
+        from .records import FailureType
+
+        if state.pos.frame.name == self.operates_in_frame:
+            xyz = np.asarray(state.pos.xyz, dtype=np.float64)
+        else:
+            xyz = np.asarray(
+                frame_graph.convert(state.pos, to=self.operates_in_frame).xyz,
+                dtype=np.float64,
+            )
+
+        prev = self._prev_xyz
+        self._prev_xyz = xyz
+
+        # ---- AABB containment latches (eval_stop_mode) -------------------
+        # Order is enforced: gate-2 only latches *after* gate-1 has latched,
+        # so a drone that enters the center AABB before the original gate
+        # AABB doesn't accidentally satisfy gate-2 first. The latches
+        # exist independent of eval_stop_mode (cheap to compute) but only
+        # the eval_stop_mode branches read them.
+        inside_now_1 = False
+        inside_now_2 = False
+        if self._transit_aabb_1_min is not None:
+            inside_now_1 = bool(
+                (xyz >= self._transit_aabb_1_min).all()
+                and (xyz <= self._transit_aabb_1_max).all()
+            )
+            if inside_now_1 and not self._ever_inside_aabb_1:
+                self._ever_inside_aabb_1 = True
+                # Mirror the plane-cross legacy: stamp transit time on
+                # first entry so post-hoc / sampling can scope on it.
+                if self._transit_t_1 is None:
+                    self._transit_t_1 = float(state.t)
+                if self.eval_stop_mode:
+                    self._progress.clear()
+        if self._transit_aabb_2_min is not None:
+            inside_now_2 = bool(
+                (xyz >= self._transit_aabb_2_min).all()
+                and (xyz <= self._transit_aabb_2_max).all()
+            )
+            if (inside_now_2 and not self._ever_inside_aabb_2
+                    and self._ever_inside_aabb_1):
+                self._ever_inside_aabb_2 = True
+                if self._transit_t_2 is None:
+                    self._transit_t_2 = float(state.t)
+                if self.eval_stop_mode:
+                    self._progress.clear()
+
+        # ---- Plane-crossing check for the currently-active gate ----------
+        # Disabled in eval_stop_mode — same reasoning as MissGateCriterion:
+        # the natural arc of a drone approach can clip the gate plane
+        # outside the strict rectangle without indicating policy failure.
+        # In eval mode we rely on the AABB latches above + the post-hoc
+        # phase classification.
+        def _try_transit(prev_xyz, cur_xyz, centre, u, v, n, hu, hv):
+            """Return (crossed, inside, cu, cv) for the plane swept
+            between ``prev → cur``. ``crossed`` is True iff signed
+            distance changed sign; ``inside`` is True iff the crossing
+            point lies inside the (margin-shrunk) aperture rectangle."""
+            s0 = float(np.dot(prev_xyz - centre, n))
+            s1 = float(np.dot(cur_xyz - centre, n))
+            if s0 == s1 or s0 * s1 > 0.0:
+                return False, False, 0.0, 0.0
+            t = s0 / (s0 - s1)
+            cross = prev_xyz + t * (cur_xyz - prev_xyz)
+            rel = cross - centre
+            cu = float(np.dot(rel, u))
+            cv = float(np.dot(rel, v))
+            inside_u = abs(cu) <= hu - self.margin_m
+            inside_v = abs(cv) <= hv - self.margin_m
+            return True, (inside_u and inside_v), cu, cv
+
+        if prev is not None and not self._transited_1 and not self.eval_stop_mode:
+            crossed, inside, cu, cv = _try_transit(
+                prev, xyz, self.centre_1, self.u_1, self.v_1, self.n_1,
+                self.hu_1, self.hv_1,
+            )
+            if crossed:
+                if inside:
+                    self._transited_1 = True
+                    self._transit_t_1 = float(state.t)
+                    self._progress.clear()   # distance target switches to gate 2
+                else:
+                    worst = max(abs(cu) - self.hu_1, abs(cv) - self.hv_1)
+                    return Violation(
+                        description=(
+                            f"drone crossed gate-1 plane at (u={cu:+.3f}, "
+                            f"v={cv:+.3f}) outside aperture half-widths "
+                            f"(hu={self.hu_1:.3f}, hv={self.hv_1:.3f})"
+                        ),
+                        value=float(worst),
+                        threshold=0.0,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_1",
+                               "phase": self._phase(),
+                               "mode": "plane_outside_aperture",
+                               "cu": cu, "cv": cv,
+                               "hu": self.hu_1, "hv": self.hv_1},
+                    )
+        elif (prev is not None and self._transited_1
+                and not self._transited_2 and not self.eval_stop_mode):
+            crossed, inside, cu, cv = _try_transit(
+                prev, xyz, self.centre_2, self.u_2, self.v_2, self.n_2,
+                self.hu_2, self.hv_2,
+            )
+            if crossed:
+                if inside:
+                    self._transited_2 = True
+                    self._transit_t_2 = float(state.t)
+                    self._progress.clear()   # distance target switches to goal
+                else:
+                    worst = max(abs(cu) - self.hu_2, abs(cv) - self.hv_2)
+                    return Violation(
+                        description=(
+                            f"drone crossed gate-2 plane at (u={cu:+.3f}, "
+                            f"v={cv:+.3f}) outside aperture half-widths "
+                            f"(hu={self.hu_2:.3f}, hv={self.hv_2:.3f})"
+                        ),
+                        value=float(worst),
+                        threshold=0.0,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_2",
+                               "phase": self._phase(),
+                               "mode": "plane_outside_aperture",
+                               "cu": cu, "cv": cv,
+                               "hu": self.hu_2, "hv": self.hv_2},
+                    )
+
+        # ---- Goal-aware checks — only when goal_position is configured ----
+        if self.goal_xyz is None:
+            return None
+        dist_to_goal = float(np.linalg.norm(xyz - self.goal_xyz))
+
+        # ---- eval_stop_mode: GOAL_REACHED only after both AABB transits,
+        # currently outside both AABBs, and within goal tolerance. Mirrors
+        # MissGateCriterion's post-AABB gate so we don't fire a success-
+        # stop while the drone is mid-aperture (a collision could still
+        # happen one step later).
+        if self.eval_stop_mode:
+            both_latched = self._ever_inside_aabb_1 and self._ever_inside_aabb_2
+            outside_now = (not inside_now_1) and (not inside_now_2)
+            if (both_latched and outside_now
+                    and dist_to_goal <= self.goal_tolerance_m):
+                return Violation(
+                    description=(
+                        f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                        f"≤ {self.goal_tolerance_m:.3f} m) after both gate "
+                        "transits; stopping rollout"
+                    ),
+                    value=dist_to_goal,
+                    threshold=self.goal_tolerance_m,
+                    failure_type=FailureType.GOAL_REACHED,
+                    extra={"phase": "post_gate_2",
+                           "mode": "goal_reached_both_gates",
+                           "dist_to_goal": dist_to_goal,
+                           "transit_time_1": self._transit_t_1,
+                           "transit_time_2": self._transit_t_2},
+                )
+        else:
+            # ---- Legacy skip check: reached goal proximity before
+            # transiting both → MISS_GATE. Disabled in eval_stop_mode
+            # for the same reason as MissGateCriterion mode (b): with
+            # loosened tolerance and a start point near goal it would
+            # fire spuriously; in eval mode we let the rollout run to
+            # the natural stop conditions and decide post-hoc.
+            if dist_to_goal <= self.goal_tolerance_m:
+                if not self._transited_1:
+                    return Violation(
+                        description=(
+                            f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                            f"≤ {self.goal_tolerance_m:.3f} m) without crossing "
+                            f"gate 1 — skipped both gates"
+                        ),
+                        value=dist_to_goal,
+                        threshold=self.goal_tolerance_m,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_1",
+                               "phase": self._phase(),
+                               "mode": "goal_without_transit",
+                               "dist_to_goal": dist_to_goal},
+                    )
+                if not self._transited_2:
+                    return Violation(
+                        description=(
+                            f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                            f"≤ {self.goal_tolerance_m:.3f} m) after gate 1 but "
+                            f"without crossing gate 2 — skipped gate 2"
+                        ),
+                        value=dist_to_goal,
+                        threshold=self.goal_tolerance_m,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_2",
+                               "phase": self._phase(),
+                               "mode": "goal_without_transit",
+                               "dist_to_goal": dist_to_goal,
+                               "transit_time": self._transit_t_1},
+                    )
+                # Both transited → success; nothing to emit.
+                self._progress.clear()
+                return None
+
+        # ---- Stuck check against the current target ---------------------
+        # In eval_stop_mode the AABB latches drive the target switch;
+        # otherwise the legacy plane-cross transit flags do.
+        if self.min_progress_window_s is None:
+            return None
+        if self.eval_stop_mode and self._transit_aabb_1_min is not None:
+            t1, t2 = self._ever_inside_aabb_1, self._ever_inside_aabb_2
+        else:
+            t1, t2 = self._transited_1, self._transited_2
+        if not t1:
+            target_xyz = self.centre_1
+            target_label = "gate_1_centre"
+        elif not t2:
+            target_xyz = self.centre_2
+            target_label = "gate_2_centre"
+        else:
+            target_xyz = self.goal_xyz
+            target_label = "goal"
+        dist_to_target = float(np.linalg.norm(xyz - target_xyz))
+        t_now = float(state.t)
+        self._progress.append((t_now, dist_to_target))
+        while (self._progress
+               and t_now - self._progress[0][0] > self.min_progress_window_s):
+            self._progress.popleft()
+        if not self._progress:
+            return None
+        t_oldest, d_oldest = self._progress[0]
+        if t_now - t_oldest < self.min_progress_window_s:
+            return None
+        progress = d_oldest - dist_to_target
+        if progress < self.min_progress_m:
+            if not t1:
+                ftype = FailureType.MISS_GATE
+                which = "gate_1"
+                phase = "pre_gate_1"
+                desc_tail = "stuck before gate 1"
+            elif not t2:
+                ftype = FailureType.MISS_GATE
+                which = "gate_2"
+                phase = "between_gates"
+                desc_tail = "stuck between gates 1 and 2"
+            else:
+                ftype = FailureType.GOAL_NOT_REACHED
+                which = "post_gate_2"
+                phase = "post_gate_2"
+                desc_tail = "stuck after gate 2; goal not reached"
+            return Violation(
+                description=(
+                    f"drone hasn't reduced distance to {target_label} by "
+                    f"≥{self.min_progress_m:.3f} m in the last "
+                    f"{self.min_progress_window_s:.1f} s "
+                    f"(d_oldest={d_oldest:.3f} → d_now={dist_to_target:.3f}); "
+                    f"{desc_tail}"
+                ),
+                value=float(progress),
+                threshold=self.min_progress_m,
+                failure_type=ftype,
+                extra={"which_gate": which,
+                       "phase": phase,
+                       "mode": "stuck",
+                       "target": target_label,
+                       "dist_to_target": dist_to_target,
+                       "dist_to_goal": dist_to_goal,
+                       "transit_time_1": self._transit_t_1,
+                       "transit_time_2": self._transit_t_2},
+            )
         return None

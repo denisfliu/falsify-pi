@@ -25,6 +25,8 @@ scenes:
   - scene:        configs/scenes/left_gate.yaml
     prompt_name:  left_gate
     safety:       configs/safety/left_gate.yaml
+    recovery:     configs/recovery/left_gate_mpc.yaml
   - scene:        configs/scenes/right_gate.yaml
     prompt_name:  right_gate
     safety:       configs/safety/right_gate.yaml
+    recovery:     configs/recovery/right_gate_mpc.yaml

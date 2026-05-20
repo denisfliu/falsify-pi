@@ -82,8 +82,9 @@ successful transit in `_transit_t` and stamps it into
 | `EXCESSIVE_TILT` | `TiltCriterion` | body-z deviation from world-z exceeds threshold |
 | `COLLISION_GATE` | `PointCloudCollisionCriterion` | drone OBB intersects a `"gate"`-labelled point |
 | `COLLISION_OTHER` | `PointCloudCollisionCriterion` | drone OBB intersects a non-gate-labelled point |
-| `MISS_GATE` | `MissGateCriterion` | drone failed to navigate the gate. Three sub-modes (all emit MISS_GATE): (a) plane-crossing outside aperture, (b) reached goal proximity without transit, (c) no progress toward aperture in `min_progress_window_s` seconds. |
+| `MISS_GATE` | `MissGateCriterion` | drone failed to navigate the gate. **Legacy mode** (default): three sub-modes — (a) plane-crossing outside aperture (BUGGY for center_gate — disabled in eval_stop_mode), (b) reached goal proximity without transit, (c) no progress toward aperture. **eval_stop_mode**: only emitted as a no-progress stop signal; final MISS_GATE classification is decided post-hoc. |
 | `GOAL_NOT_REACHED` | `MissGateCriterion` | drone *did* transit the aperture but then failed to reach `goal_position` — no progress toward goal in `min_progress_window_s` seconds. The "post-gate hover failed" case. |
+| `GOAL_REACHED` | `MissGateCriterion` (eval_stop_mode only) | drone is within `goal_tolerance_m` of the goal. This is a **success stop signal**, not a failure; the post-hoc classifier resolves SUCCESS vs SKIPPED_GATE. Never in `recovery_triggers`. |
 | `PROXIMITY_COLLISION` | (reserved for future scalar-distance criterion) | |
 | `CUSTOM` | anything without a name-mapping | fallback |
 
@@ -129,6 +130,63 @@ centre are tested against the half-widths. Outside ⇒ `MISS_GATE`.
 Inside ⇒ mark `_transited` so re-crossings (e.g. recovery looping back
 through) don't re-fire. ``margin_m`` shrinks the aperture inwards for a
 stricter "well-centred passage" check.
+
+### `eval_stop_mode` (post-hoc classification path)
+
+For evaluation campaigns the in-flight plane-cross-outside-aperture
+check was firing false-positives (center_gate's natural approach arcs
+clipped the strict rectangle). Pass ``eval_stop_mode=True`` (set in
+``configs/safety/*.yaml::miss_gate.eval_stop_mode``) to switch the
+criterion into a **stop-signal-only** mode:
+
+- Mode (a) plane-crossing-outside-aperture is **skipped entirely**. No
+  MISS_GATE emitted at runtime for that reason.
+- On goal proximity (``dist <= goal_tolerance_m``), fire
+  `FailureType.GOAL_REACHED` regardless of whether the drone's
+  trajectory crossed the plane inside the rectangle. This is a **success
+  stop signal**, not a failure.
+- Stuck check still fires (`MISS_GATE` pre-transit / `GOAL_NOT_REACHED`
+  post-transit), but it's just a stop signal — the post-hoc classifier
+  reclassifies based on the gate's MOCAP AABB.
+
+Final SUCCESS / MISS_GATE / GOAL_NOT_REACHED / SKIPPED_GATE classification
+happens in `falsify.safety.posthoc.classify_trajectory_posthoc`, which
+walks the trajectory's MOCAP positions against
+``scene_cfg.gate_region.aabb_min/max`` (with any
+``GateRigidPerturbation`` Δ applied via the same MOCAP rigid transform).
+The runtime `failure.failure_type` is *only* used to forward
+COLLISION_GATE / COLLISION_OTHER / OUT_OF_BOUNDS / EXCESSIVE_* verbatim;
+everything else is reclassified.
+
+## Post-hoc classification (`posthoc.py`)
+
+`classify_trajectory_posthoc(positions_mocap, scene_cfg, ...)` returns a
+`{outcome, transited, first_inside_step, last_inside_step,
+n_states_inside, aabb_mocap}` dict. Outcome is one of:
+
+| Outcome              | Condition                                               |
+|----------------------|--------------------------------------------------------|
+| `SUCCESS`            | runtime fired `GOAL_REACHED` + trajectory entered AABB  |
+| `SKIPPED_GATE`       | runtime fired `GOAL_REACHED` + trajectory never inside  |
+| `MISS_GATE`          | rollout stopped (stuck / timeout / OOB) + never inside  |
+| `GOAL_NOT_REACHED`   | rollout stopped + trajectory was inside the AABB        |
+| `COLLISION_GATE`     | runtime fired collision, gate-labeled                   |
+| `COLLISION_OTHER`    | runtime fired collision, other-labeled                  |
+| `OUT_OF_BOUNDS`      | runtime fired bounds                                    |
+| `EXCESSIVE_VELOCITY` | runtime fired velocity                                  |
+| `EXCESSIVE_TILT`     | runtime fired tilt                                      |
+| `ERROR`              | orchestrator raised                                     |
+
+The campaign runner (`scripts/run_eval_campaign.py`) writes
+`posthoc_outcome` + `transited` + transit-step indices into each trial's
+`episode_summary.json` and uses `posthoc_outcome == "SUCCESS"` as the
+single source of truth for `n_succeeded` in `campaign_summary.json`.
+`by_outcome` is the authoritative histogram; `by_failure_type` (the
+runtime stop-signal histogram) is kept as a diagnostic alongside.
+
+The gate AABB consumed by the classifier lives on each scene YAML under
+`gate_region.aabb_frame` + `aabb_min` + `aabb_max` (MOCAP only today).
+The same block is used by `GateRigidPerturbation` for Gaussian selection.
 
 ## Adding a criterion
 

@@ -23,6 +23,11 @@ class FailureType(Enum):
     # — i.e. the post-gate hover failed. Distinct from MISS_GATE because
     # the gate crossing did succeed.
     GOAL_NOT_REACHED = auto()
+    # Success stop signal — drone reached goal proximity. Emitted when
+    # MissGateCriterion runs in `eval_stop_mode`; the post-hoc classifier
+    # treats this as SUCCESS if the trajectory transited the gate's AABB,
+    # otherwise as SKIPPED_GATE.
+    GOAL_REACHED = auto()
     CUSTOM = auto()
 
 

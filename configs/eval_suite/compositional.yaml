@@ -1,0 +1,40 @@
+# Compositional evaluation scenario — two gates per scene, with a
+# combined two-step prompt. The drone must transit gate 1 (the original
+# side gate) first and then gate 2 (the center duplicate) before hovering
+# over the stuffed animal.
+#
+# Scene-side mechanics:
+#   - The scene YAMLs (`left_and_center.yaml` / `right_and_center.yaml`)
+#     apply a DuplicateAABB scene_edit that COPIES the original gate's
+#     Gaussians to the center anchor (2.75, -0.25, 0) with MOCAP +y as
+#     the new plane normal. The original gate stays in place.
+# Safety-side mechanics:
+#   - `configs/safety/{left,right}_and_center.yaml` declare an
+#     `ordered_miss_gate:` block with the two aperture corner sets. The
+#     drone must transit gate 1 before gate 2 counts; reaching the goal
+#     without transiting either gate fires MISS_GATE.
+#
+# Recovery is NOT yet wired for compositional — phase 3.x. Start
+# randomization is the only perturbation.
+
+name: compositional
+description: |
+  Two-gate scenes (left_and_center, right_and_center) with a combined
+  two-step prompt. Start jitter only.
+
+n_trials: 20
+master_seed: 0
+
+recipe:
+  start_randomization:
+    enabled: true
+  gate_perturbation:
+    enabled: false
+
+scenes:
+  - scene:        configs/scenes/left_and_center.yaml
+    prompt_name:  left_then_center
+    safety:       configs/safety/left_and_center.yaml
+  - scene:        configs/scenes/right_and_center.yaml
+    prompt_name:  right_then_center
+    safety:       configs/safety/right_and_center.yaml

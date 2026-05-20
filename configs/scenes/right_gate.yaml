@@ -79,3 +79,12 @@ gate_region:
   exclude_aabbs:
     - { min: [1.27, -0.86, 0.02], max: [1.93, 0.39, 0.62] }   # the table
   applies_to_scene_objects: [gate]
+
+# Obstacles the gate perturbation sampler must avoid pushing the gate into.
+# Numbers from data/gate_scenes_export/objects_final/objects_summary.json
+# (right_table). See left_gate.yaml for the rejection-sampling rule.
+obstacles:
+  - name: table
+    aabb_frame: mocap
+    aabb_min: [1.27, -0.85, 0.02]
+    aabb_max: [1.92,  0.38, 0.60]

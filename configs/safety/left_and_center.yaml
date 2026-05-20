@@ -1,0 +1,56 @@
+# Safety criteria for the LEFT-AND-CENTER compositional task. Two
+# aperture rectangles chained via OrderedMissGateCriterion: the drone
+# must transit gate 1 (the original LEFT gate) before any progress
+# toward gate 2 (the CENTER duplicate) counts.
+#
+# Aperture corners:
+#   - gate_1 = original LEFT-gate posts (same as configs/safety/left_gate.yaml)
+#   - gate_2 = center-position copy   (same as configs/safety/center_gate.yaml)
+#
+# The collision criterion uses the `gate` scene_object which —
+# courtesy of the scene's DuplicateAABB edit — contains BOTH gates'
+# point clouds, so a hit on either gate fires COLLISION_GATE.
+
+bounds_frame: mocap
+bounds_lower: [-1.0, -3.0, 0.2]
+bounds_upper: [ 4.0,  3.0, 3.0]
+max_speed: 10.0
+max_tilt_rad: 1.2
+
+drone_body:
+  half_extents: [0.175, 0.175, 0.075]
+
+collision:
+  enabled: true
+  gate_objects:  [gate]   # gate cloud = original-left ∪ center-copy
+  other_objects: [table]
+
+ordered_miss_gate:
+  corners_frame: mocap
+  gates:
+    - name: gate_1   # original left gate (drone passes through this first)
+      corners:
+        - [0.65, 1.05, 0.20]
+        - [1.18, 0.45, 0.20]
+        - [1.18, 0.45, 1.95]
+        - [0.65, 1.05, 1.95]
+    - name: gate_2   # center copy
+      corners:
+        - [3.156, -0.328, 0.125]
+        - [2.356, -0.327, 0.125]
+        - [2.356, -0.327, 1.875]
+        - [3.156, -0.328, 1.875]
+  margin_m: 0.0
+  goal_position: [1.525, -0.615, 1.0]
+  goal_tolerance_m: 1.50            # loose post-gate hover region (matches single-gate eval)
+  min_progress_window_s: 4.0
+  min_progress_m: 0.05
+  # eval_stop_mode disables the in-flight plane-cross-outside-aperture
+  # check (which was firing on the policy's curved approach against
+  # both gates' planes), replacing it with per-gate AABB transit
+  # latches from `scene_cfg.gate_regions`. GOAL_REACHED fires only when
+  # BOTH gate AABBs have latched, the drone is currently outside both,
+  # and within `goal_tolerance_m`. Failure phase ({pre_gate_1,
+  # between_gates, post_gate_2}) is stamped into each Violation.extra
+  # and surfaced in the post-hoc summary.
+  eval_stop_mode: true

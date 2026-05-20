@@ -1,4 +1,4 @@
-# Recovery config for left_gate falsifications.
+# Recovery config for right_gate falsifications.
 #
 # When the failure detector fires on one of the listed types, the
 # orchestrator builds a CoursedMpcPlanner over `course` and produces a
@@ -10,12 +10,11 @@
 # tilt failures are sim instabilities — not falsifications — and don't
 # trigger recovery.
 
-course: configs/courses/through_left_gate.yaml
+course: configs/courses/through_right_gate.yaml
 planner: mpc                       # mpc | spline (spline = no acados)
 trigger_failure_types:
   - MISS_GATE
   - COLLISION_GATE
   - COLLISION_OTHER
   - OUT_OF_BOUNDS
-  - GOAL_NOT_REACHED   # post-transit hover failure — see seed_sampling.py
-
+  - GOAL_NOT_REACHED

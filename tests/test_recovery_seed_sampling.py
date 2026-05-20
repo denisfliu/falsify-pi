@@ -38,6 +38,8 @@ def test_singleton_history_returns_only_state():
     assert step == 0
 
 
+
+
 def test_bias_early_concentrates_low_indices():
     h = _history(100)
     rng = np.random.default_rng(0)

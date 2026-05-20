@@ -267,12 +267,12 @@ def run_episode(
             )
 
     detector = None
+    # Compute gate_deltas once — used both by the safety layer (collision
+    # PLYs + aperture corners follow the moved gate) and by the post-hoc
+    # classifier (gate AABB is transported through the same Δ).
+    gate_deltas = _extract_gate_deltas(perturbations)
     if detector_factory is not None:
         safety_cfg = dict(cfg.episode_cfg.get("safety", {}))
-        # Pass through any environment-perturbation deltas the safety
-        # layer needs (currently consumed by the gate-aperture +
-        # collision-PLY transform).
-        gate_deltas = _extract_gate_deltas(perturbations)
         if gate_deltas is not None:
             safety_cfg["_gate_deltas"] = gate_deltas
         detector = detector_factory(frame_graph, safety_cfg)
@@ -339,5 +339,6 @@ def run_episode(
         metadata={
             "perturbations": perturbations.manifest() if perturbations is not None else None,
             "recovery_seed": recovery_seed_info,
+            "gate_deltas": gate_deltas,
         },
     )

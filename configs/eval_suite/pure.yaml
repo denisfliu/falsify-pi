@@ -35,9 +35,25 @@ scenes:
   - scene:        configs/scenes/left_gate.yaml
     prompt_name:  left_gate
     safety:       configs/safety/left_gate.yaml
+    recovery:     configs/recovery/left_gate_mpc.yaml
   - scene:        configs/scenes/right_gate.yaml
     prompt_name:  right_gate
     safety:       configs/safety/right_gate.yaml
-  - scene:        configs/scenes/center_gate.yaml
-    prompt_name:  center_from_left
-    safety:       configs/safety/center_gate.yaml
+    recovery:     configs/recovery/right_gate_mpc.yaml
+  # center_gate is evaluated under BOTH prompts: half the per-scene trial
+  # budget under center_from_left, half under center_from_right.
+  # `scene_key_override` keeps the bundle dirs separate so the two prompts'
+  # cards don't clobber each other; `n_trials_override` splits the budget.
+  # Each half points at its matching recovery course.
+  - scene:               configs/scenes/center_gate.yaml
+    prompt_name:         center_from_left
+    safety:              configs/safety/center_gate.yaml
+    recovery:            configs/recovery/center_gate_mpc.yaml
+    scene_key_override:  center_gate_from_left
+    n_trials_override:   10
+  - scene:               configs/scenes/center_gate.yaml
+    prompt_name:         center_from_right
+    safety:              configs/safety/center_gate.yaml
+    recovery:            configs/recovery/center_gate_from_right_mpc.yaml
+    scene_key_override:  center_gate_from_right
+    n_trials_override:   10

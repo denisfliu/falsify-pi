@@ -1,0 +1,84 @@
+# right_and_center — compositional scene mirror of left_and_center.
+#
+# Inherits the RIGHT scene's gsplat (same as right_gate.yaml) and adds a
+# duplicate of the right gate placed at the center anchor (2.75, -0.25, 0)
+# with mocap +y as its plane normal. Net result: TWO gates — the original
+# right gate AND a center copy. The drone is asked to fly through the
+# right gate first, then through the center gate, then hover over the
+# stuffed animal.
+
+scene_key: right_and_center
+gsplat_path: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353
+gsplat_config_yml: ../../data/gate_scenes_export/right_scene/mocap_outputs/sagesplat_mocap/sagesplat/2026-05-11_144353/config.yml
+gsplat_data_cwd: ../../data/gate_scenes_export/right_scene
+
+start_position_mocap: [0.00, 0.00, 1.50]
+goal_position_mocap:  [1.525, -0.615, 1.0]
+gate_position_mocap:  [0.54, -1.15, 1.50]
+
+start_randomization:
+  half_widths_mocap: [0.05, 0.05, 0.05]
+
+frames:
+  - { name: mocap, notes: "Joint mocap (z-up)." }
+  - { name: ned,   notes: "FiGS dynamics frame; perm5 of mocap (diag(1,-1,-1))." }
+  - { name: ns,    notes: "Nerfstudio-internal for the RIGHT splat (ICP + dataparser pre-composed)." }
+  - { name: cam_body, notes: "Drone body frame (IMU origin)." }
+  - { name: cam_forward, notes: "Forward-facing camera optical frame." }
+  - { name: cam_downward, notes: "Downward-facing camera optical frame." }
+
+transforms:
+  - { src: ned, dst: mocap, type: se3_inline,
+      R: [[1, 0, 0], [0, -1, 0], [0, 0, -1]],
+      t: [0, 0, 0] }
+  - { src: mocap, dst: ns, type: sim3_matrix_file,
+      path: ../../data/gate_scenes_export/objects_final/joint_mocap_to_nerf.json,
+      json_path: [scenes, right_gate_new, joint_mocap_to_nerf_4x4] }
+  - { src: cam_body, dst: cam_forward, type: se3_inline,
+      R: [[0, 1, 0], [0, 0, -1], [-1, 0, 0]],
+      t: [0.03, -0.01, 0.10] }
+  - { src: cam_body, dst: cam_downward, type: se3_inline,
+      R: [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+      t: [0.0, 0.0, 0.05] }
+
+scene_objects:
+  - { name: gate,  ply: ../../data/gate_scenes_export/objects_final/right_gate.ply,  frame: mocap, color: [0.32, 0.55, 0.78] }
+  - { name: table, ply: ../../data/gate_scenes_export/objects_final/right_table.ply, frame: mocap, color: [0.55, 0.45, 0.30] }
+
+# Duplicate the right gate to the center anchor.
+# Source anchor + normal come from right_gate.yaml's gate_region. AABB
+# matches the same block, widened to catch fuzzy outer Gaussians the
+# tight box misses (same widening convention as left_and_center).
+scene_edits:
+  - name: duplicate_right_gate_to_center
+    type: duplicate_aabb
+    target_aabb_frame: mocap
+    target_aabb_min: [-0.06, -1.55, 0.05]
+    target_aabb_max: [ 1.15, -0.75, 2.05]
+    include_aabbs: []
+    exclude_aabbs:
+      - { min: [1.27, -0.86, 0.02], max: [1.93, 0.39, 0.62] }   # right_table
+    transform_frame: mocap
+    transform:
+      source_anchor: [0.544, -1.147, 0.074]
+      target_anchor: [2.75, -0.25, 0.0]
+      source_normal: [0.385, -0.923, 0.0]
+      target_normal: [0.0, -1.0, 0.0]
+    applies_to_scene_objects: [gate]
+
+# Published per-gate AABB metadata. See configs/scenes/left_and_center.yaml
+# for the convention. gate_1 = right gate (original); gate_2 = duplicate
+# at the center anchor (same AABB as configs/scenes/center_gate.yaml).
+gate_regions:
+  - name: gate_1
+    aabb_frame: mocap
+    aabb_min: [-0.06, -1.55, 0.05]
+    aabb_max: [ 1.15, -0.75, 2.05]
+    anchor:   [0.544, -1.147, 0.074]
+    normal:   [0.385, -0.923, 0.0]
+  - name: gate_2
+    aabb_frame: mocap
+    aabb_min: [2.25, -0.69, 0.05]
+    aabb_max: [3.25,  0.16, 2.05]
+    anchor:   [2.75, -0.25, 0.0]
+    normal:   [0.0, -1.0, 0.0]

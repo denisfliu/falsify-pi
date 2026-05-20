@@ -68,6 +68,15 @@ gate_region:
   exclude_aabbs: []
   applies_to_scene_objects: [gate]
 
+# Obstacles the gate perturbation sampler must avoid. center_gate uses the
+# LEFT scene's gsplat (with the gate moved by scene_edits), so the table
+# at the un-edited left_table location is what perturbations must clear.
+obstacles:
+  - name: table
+    aabb_frame: mocap
+    aabb_min: [1.20, -0.83, 0.05]
+    aabb_max: [1.85,  0.40, 0.60]
+
 # Move the gate Gaussians (and the gate PLY in the inspector view) so the
 # gate sits centered over (2.5, -0.25, 0) with mocap +y as its plane normal.
 #

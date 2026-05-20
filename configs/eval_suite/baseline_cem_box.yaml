@@ -1,0 +1,34 @@
+# Uniform-baseline arm of the CEM A/B test. Identical admissible box to
+# configs/cem/collision_gate.yaml; the only difference between this arm
+# and the cem_collision_gate_exploit arm is the *sampler*:
+#
+#   - this scenario:                      uniform within the box
+#   - cem_collision_gate_exploit:         multivariate Gaussian (CEM-fit)
+#
+# Same N, same scenes, same policy. Compare COLLISION_GATE rates between
+# the two campaign_summary.json files.
+
+name: baseline_cem_box
+description: |
+  Uniform baseline against the CEM exploit arm. Bounds chosen to match
+  configs/cem/collision_gate.yaml exactly so the comparison is fair.
+
+n_trials: 20
+master_seed: 7   # ≠ CEM's optimization seed so the baseline doesn't
+                 # overlap the CEM-iter samples.
+
+recipe:
+  start_randomization:
+    enabled: true   # uses scene's start_randomization.half_widths_mocap
+  gate_perturbation:
+    enabled: true
+    offset_half_widths: [0.10, 0.10, 0.0]   # gate_dz pinned (gates don't levitate)
+    yaw_half_width_rad: 0.17453             # ±10°
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  left_gate
+    safety:       configs/safety/left_gate.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  right_gate
+    safety:       configs/safety/right_gate.yaml

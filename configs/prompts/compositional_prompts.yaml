@@ -1,0 +1,13 @@
+# Compositional eval-only prompts. Not auto-generated from
+# data/atomic_datasets/ — these tasks have no training-data counterpart.
+# Loaded ALONGSIDE configs/prompts/atomic_dataset_prompts.yaml by the
+# eval bundle generator (compositional entries take precedence on key
+# collision so we can override an atomic prompt if needed).
+
+prompts:
+  left_then_center:
+    task: "go through the left gate, then through the center gate and hover over the stuffed animal"
+    source: configs/prompts/compositional_prompts.yaml (manual)
+  right_then_center:
+    task: "go through the right gate, then through the center gate and hover over the stuffed animal"
+    source: configs/prompts/compositional_prompts.yaml (manual)

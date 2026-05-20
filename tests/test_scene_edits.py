@@ -9,7 +9,11 @@ from falsify.geometry import (
     COLMAP, MOCAP, NED, NS, FrameGraph, SE3, Sim3,
 )
 from falsify.sim.scene_edits import (
-    RigidTransformAABB, apply_edits_to_arrays, load_scene_edits,
+    DuplicateAABB,
+    RigidTransformAABB,
+    apply_edits_to_arrays,
+    apply_edits_to_scene_object,
+    load_scene_edits,
 )
 
 
@@ -415,3 +419,162 @@ def test_load_oriented_aabbs_from_yaml():
     np.testing.assert_allclose(ob.center, [1.5, 0.5, 1.0])
     np.testing.assert_allclose(ob.half_extents, [0.3, 0.05, 0.5])
     assert ob.yaw == 0.7
+
+
+# ---------------------------------------------------------------------------
+# DuplicateAABB tests
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_kwargs(target_anchor=(2.5, -0.25, 0.0)):
+    """Stock kwargs for a duplicate that translates the AABB [0,1]^3 region
+    (anchored at its centre) to ``target_anchor`` without rotating."""
+    return dict(
+        name="dup",
+        target_aabb_frame="mocap",
+        target_aabb_min=np.array([0.0, 0.0, 0.0]),
+        target_aabb_max=np.array([1.0, 1.0, 1.0]),
+        source_anchor=np.array([0.5, 0.5, 0.5]),
+        target_anchor=np.array(target_anchor),
+        source_normal=np.array([1.0, 0.0, 0.0]),
+        target_normal=np.array([1.0, 0.0, 0.0]),
+    )
+
+
+def test_duplicate_aabb_appends_copy_to_arrays():
+    g = _graph_perm5_with_ns_scale(scale=1.0)
+    means = np.array([
+        [0.5, 0.5, 0.5],     # inside AABB
+        [0.6, 0.4, 0.7],     # inside AABB
+        [5.0, 5.0, 5.0],     # outside — untouched, not copied
+        [-3.0, -3.0, -3.0],  # outside — untouched, not copied
+    ])
+    edit = DuplicateAABB(**_duplicate_kwargs())
+    new_means, _ = apply_edits_to_arrays(means, None, [edit], g)
+    # Originals all present and unchanged.
+    np.testing.assert_allclose(new_means[:4], means, atol=1e-12)
+    # Two new rows: copies of the two inside-AABB points translated by Δ.
+    assert new_means.shape[0] == 6
+    delta = np.array([2.0, -0.75, -0.5])
+    np.testing.assert_allclose(new_means[4], means[0] + delta, atol=1e-12)
+    np.testing.assert_allclose(new_means[5], means[1] + delta, atol=1e-12)
+
+
+def test_duplicate_aabb_composes_quats_for_copies():
+    """The appended copies' quats are pre-multiplied by the edit's
+    rotation; originals' quats remain the identity."""
+    g = _graph_perm5_with_ns_scale(scale=1.0)
+    means = np.array([[1.0, 0.0, 0.0]])
+    quats = np.array([[1.0, 0.0, 0.0, 0.0]])   # identity in wxyz
+    edit = DuplicateAABB(
+        name="dup_rot",
+        target_aabb_frame="mocap",
+        target_aabb_min=np.array([-2.0, -2.0, -2.0]),
+        target_aabb_max=np.array([2.0, 2.0, 2.0]),
+        source_anchor=np.array([0.0, 0.0, 0.0]),
+        target_anchor=np.array([0.0, 0.0, 0.0]),
+        source_normal=np.array([1.0, 0.0, 0.0]),
+        target_normal=np.array([0.0, 1.0, 0.0]),   # +π/2 about z
+    )
+    new_means, new_quats = apply_edits_to_arrays(means, quats, [edit], g)
+    assert new_means.shape[0] == 2
+    np.testing.assert_allclose(new_means[0], [1.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(new_means[1], [0.0, 1.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(new_quats[0], [1.0, 0.0, 0.0, 0.0], atol=1e-12)
+    expected = np.array([np.sqrt(2) / 2, 0.0, 0.0, np.sqrt(2) / 2])  # wxyz
+    np.testing.assert_allclose(new_quats[1], expected, atol=1e-9)
+
+
+def test_duplicate_aabb_scene_object_appends_transformed_cloud():
+    """PLY-side mirror: original cloud is preserved; transformed copy is
+    appended for any DuplicateAABB whose applies_to_scene_objects matches."""
+    g = _graph_perm5_with_ns_scale(scale=1.0)
+    pts = np.array([
+        [0.5, 0.5, 0.5],
+        [0.6, 0.4, 0.7],
+        [0.3, 0.8, 0.2],
+    ])
+    kwargs = _duplicate_kwargs()
+    kwargs["applies_to_scene_objects"] = ("gate",)
+    edit = DuplicateAABB(**kwargs)
+    out = apply_edits_to_scene_object("gate", pts, [edit], g)
+    assert out.shape[0] == 6
+    np.testing.assert_allclose(out[:3], pts, atol=1e-12)
+    delta = np.array([2.0, -0.75, -0.5])
+    np.testing.assert_allclose(out[3:], pts + delta, atol=1e-12)
+
+
+def test_duplicate_aabb_scene_object_skips_unmatched_object():
+    g = _graph_perm5_with_ns_scale(scale=1.0)
+    pts = np.array([[0.5, 0.5, 0.5]])
+    kwargs = _duplicate_kwargs()
+    kwargs["applies_to_scene_objects"] = ("gate",)
+    edit = DuplicateAABB(**kwargs)
+    # `table` isn't in applies_to_scene_objects → nothing happens.
+    out = apply_edits_to_scene_object("table", pts, [edit], g)
+    assert out.shape[0] == 1
+    np.testing.assert_allclose(out, pts, atol=1e-12)
+
+
+def test_load_duplicate_aabb_from_yaml():
+    cfg = {
+        "scene_edits": [{
+            "name": "duplicate_gate_to_center",
+            "type": "duplicate_aabb",
+            "target_aabb_frame": "mocap",
+            "target_aabb_min": [0.5, 0.2, 0.0],
+            "target_aabb_max": [1.2, 1.1, 2.0],
+            "transform": {
+                "source_anchor": [0.86, 0.69, 0.07],
+                "target_anchor": [2.5, -0.25, 0.0],
+                "source_normal": [0.749, 0.663, 0.0],
+                "target_normal": [0.0, -1.0, 0.0],
+            },
+            "applies_to_scene_objects": ["gate"],
+        }]
+    }
+    edits = load_scene_edits(cfg)
+    assert len(edits) == 1
+    e = edits[0]
+    assert isinstance(e, DuplicateAABB)
+    assert e.type == "duplicate_aabb"
+    np.testing.assert_allclose(e.target_anchor, [2.5, -0.25, 0.0])
+
+
+def test_move_then_duplicate_compose_in_arrays():
+    """A move followed by a duplicate operates on the (post-move) means.
+    Originals already moved by the rigid edit; duplicate then appends a
+    copy of the *moved* subset shifted by its own delta."""
+    g = _graph_perm5_with_ns_scale(scale=1.0)
+    means = np.array([
+        [0.5, 0.5, 0.5],     # inside both AABBs
+        [5.0, 5.0, 5.0],     # outside both
+    ])
+    move = RigidTransformAABB(
+        name="move",
+        target_aabb_frame="mocap",
+        target_aabb_min=np.array([0.0, 0.0, 0.0]),
+        target_aabb_max=np.array([1.0, 1.0, 1.0]),
+        source_anchor=np.array([0.5, 0.5, 0.5]),
+        target_anchor=np.array([1.0, 0.5, 0.5]),
+        source_normal=np.array([1.0, 0.0, 0.0]),
+        target_normal=np.array([1.0, 0.0, 0.0]),
+    )
+    # After the move, the inside point sits at (1.0, 0.5, 0.5); the duplicate's
+    # AABB now brackets [0.5, 1.5]^xyz so the moved point is still inside,
+    # and the duplicate translates by (2.0, 0.0, 0.0).
+    dup = DuplicateAABB(
+        name="dup",
+        target_aabb_frame="mocap",
+        target_aabb_min=np.array([0.5, 0.0, 0.0]),
+        target_aabb_max=np.array([1.5, 1.0, 1.0]),
+        source_anchor=np.array([1.0, 0.5, 0.5]),
+        target_anchor=np.array([3.0, 0.5, 0.5]),
+        source_normal=np.array([1.0, 0.0, 0.0]),
+        target_normal=np.array([1.0, 0.0, 0.0]),
+    )
+    new_means, _ = apply_edits_to_arrays(means, None, [move, dup], g)
+    assert new_means.shape[0] == 3
+    np.testing.assert_allclose(new_means[0], [1.0, 0.5, 0.5], atol=1e-12)
+    np.testing.assert_allclose(new_means[1], [5.0, 5.0, 5.0], atol=1e-12)
+    np.testing.assert_allclose(new_means[2], [3.0, 0.5, 0.5], atol=1e-12)

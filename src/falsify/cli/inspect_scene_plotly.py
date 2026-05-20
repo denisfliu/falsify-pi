@@ -321,7 +321,21 @@ def main(argv: list[str] | None = None) -> int:
         if edits:
             from falsify.geometry import PointCloud
             new_pts = apply_edits_to_scene_object(entry["name"], cloud.points, edits, fg)
-            cloud = PointCloud(points=new_pts, frame=cloud.frame, colors=cloud.colors)
+            # DuplicateAABB grows the cloud (appends a transformed copy);
+            # mirror the same growth on colors so PointCloud's invariant
+            # (len(colors) == len(points)) holds. The repeat factor is
+            # always an integer (1 = move-only, 2 = one duplicate, …).
+            new_colors = cloud.colors
+            if new_colors is not None and new_pts.shape[0] != cloud.points.shape[0]:
+                if new_pts.shape[0] % cloud.points.shape[0] != 0:
+                    raise ValueError(
+                        f"scene_edit on {entry['name']}: cloud grew from "
+                        f"{cloud.points.shape[0]} → {new_pts.shape[0]} points, "
+                        f"not an integer multiple"
+                    )
+                reps = new_pts.shape[0] // cloud.points.shape[0]
+                new_colors = np.tile(cloud.colors, (reps, 1))
+            cloud = PointCloud(points=new_pts, frame=cloud.frame, colors=new_colors)
         # Cloud's own colors look muddy in plotly; use the embodiment tint.
         color = "rgb({},{},{})".format(*[int(255 * c) for c in entry.get("color", (0.5, 0.5, 0.5))])
         traces.append(_pc_trace(cloud.points, entry["name"], color, size=2))
@@ -395,10 +409,20 @@ def main(argv: list[str] | None = None) -> int:
                 [mn[0], mx[1], mx[2]], [mx[0], mx[1], mx[2]],
             ])
             moved = apply_edits_to_scene_object(name, corners, edits, fg)
-            if not np.allclose(moved, corners):
+            # A DuplicateAABB grows the cloud to 2× (original + copy), so the
+            # shape no longer matches `corners`. Compare on the originals
+            # (which always sit at moved[:8]) and draw an edited-AABB box for
+            # EACH copy block of 8 corners.
+            n_orig = corners.shape[0]
+            n_copies = moved.shape[0] // n_orig
+            for k in range(n_copies):
+                block = moved[k * n_orig : (k + 1) * n_orig]
+                if k == 0 and np.allclose(block, corners):
+                    # First block is the original (unchanged) — skip.
+                    continue
+                label = f"{name}_aabb (edited)" if n_copies <= 2 else f"{name}_aabb (copy {k})"
                 traces.append(_aabb_edges_trace(
-                    moved.min(axis=0), moved.max(axis=0),
-                    f"{name}_aabb (edited)", color,
+                    block.min(axis=0), block.max(axis=0), label, color,
                 ))
 
     # 3. Gate plane_cut overlays (drone flies through these).

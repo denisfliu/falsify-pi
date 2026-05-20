@@ -49,6 +49,9 @@ src/falsify/
 ├── safety/        Pluggable safety criteria + FailureDetector with last-safe tracking
 ├── recovery/      SplatNavPlanner — NED in, NED out
 ├── perturbations/ three surfaces (action / observation / environment) + JSON manifest
+├── cem/           Cross-Entropy Method falsification — GaussianBoxDistribution
+│                  over the 6-d (start_dxyz, gate_dxy, gate_dyaw) vector,
+│                  continuous cost functions per FailureType, trial-card sampler
 ├── orchestrator/  run_episode + FalsificationEpisode
 ├── visualization/ per-frame ply dumps + html replay
 ├── training/      Trajectory NPZ → LeRobot-style parquet (image + state + action)

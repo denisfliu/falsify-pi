@@ -12,3 +12,4 @@ trigger_failure_types:
   - COLLISION_GATE
   - COLLISION_OTHER
   - OUT_OF_BOUNDS
+  - GOAL_NOT_REACHED

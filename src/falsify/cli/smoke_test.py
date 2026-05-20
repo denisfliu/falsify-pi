@@ -39,7 +39,7 @@ from falsify.perturbations import (
 from falsify.recovery import RecoveryConfig, SplatNavPlanner
 from falsify.safety import (
     BoundsCriterion, DroneBody, FailureDetector,
-    MissGateCriterion, PointCloudCollisionCriterion,
+    MissGateCriterion, OrderedMissGateCriterion, PointCloudCollisionCriterion,
     TiltCriterion, VelocityCriterion,
 )
 from falsify.visualization import dump_episode, html_replay, read_ply
@@ -277,7 +277,15 @@ def _build_detector_factory(scene_cfg: dict, scene_dir: Path):
 
         miss_gate_cfg = safety_cfg.get("miss_gate")
         if miss_gate_cfg:
-            criteria.append(_build_miss_gate_criterion(miss_gate_cfg, gate_deltas=gate_deltas))
+            criteria.append(_build_miss_gate_criterion(
+                miss_gate_cfg, gate_deltas=gate_deltas, scene_cfg=scene_cfg,
+            ))
+
+        ordered_cfg = safety_cfg.get("ordered_miss_gate")
+        if ordered_cfg:
+            criteria.append(_build_ordered_miss_gate_criterion(
+                ordered_cfg, scene_cfg=scene_cfg,
+            ))
 
         return FailureDetector(criteria, frame_graph)
     return factory
@@ -334,10 +342,22 @@ def _build_collision_criterion(
 
     # Stack gate-object points and other-object points separately,
     # converting from each PLY's authored frame to NED via the FrameGraph.
-    # Gate-labeled PLYs are rigid-transformed by the gate perturbation
-    # (if any) in their authored frame *before* the NED conversion so the
-    # collision check tracks the moved gate Gaussians the renderer shows.
+    # Two transforms layer on each gate-labelled PLY before NED conversion,
+    # in the order the renderer applies them to the Gaussians themselves:
+    #   1. Static `scene_edits` (e.g. center_gate.yaml's `move_gate` edit
+    #      that translates the gate from its authored location to the
+    #      center). Loaded via `load_scene_edits` and applied via
+    #      `apply_edits_to_scene_object` — the same visualizer-side path
+    #      `inspect_scene_plotly` / `visualize_waypoints` use, so what we
+    #      collide against agrees with what the inspector shows.
+    #   2. Per-episode `gate_deltas` (the `GateRigidPerturbation` Δ for
+    #      this trial, on top of the static edit).
+    # Without (1), center_gate's collision cloud sits at the *un-edited*
+    # left_gate footprint while the renderer shows the gate at its new
+    # center pose — the drone fires phantom COLLISION_GATE in empty space.
     from falsify.geometry import PointCloud
+    from falsify.sim.scene_edits import apply_edits_to_scene_object, load_scene_edits
+    scene_edits = load_scene_edits(scene_cfg)
     gate_pts: list[np.ndarray] = []
     other_pts: list[np.ndarray] = []
     for name, entry in by_name.items():
@@ -348,6 +368,13 @@ def _build_collision_criterion(
             ply_path = (scene_dir / ply_path).resolve()
         frame = frame_graph.frame(entry["frame"])
         pc = read_ply(ply_path, frame)
+        pts = np.asarray(pc.points, dtype=np.float64)
+        # (1) Static scene_edits — applies to every named scene_object in
+        # `applies_to_scene_objects`. No-op when the scene declares no
+        # edits (left_gate, right_gate).
+        if scene_edits:
+            pts = apply_edits_to_scene_object(name, pts, scene_edits, frame_graph)
+        # (2) Per-episode gate perturbation — gate-labelled clouds only.
         if name in gate_objects and gate_deltas is not None:
             # The deltas are authored in MOCAP. PLYs live in their own
             # `entry["frame"]` (typically MOCAP). If it isn't MOCAP we'd
@@ -359,11 +386,8 @@ def _build_collision_criterion(
                     f"gate perturbation requires gate scene_object {name!r} "
                     f"to live in 'mocap'; got {entry['frame']!r}"
                 )
-            moved = _apply_gate_rigid_transform(
-                np.asarray(pc.points, dtype=np.float64),
-                gate_deltas,
-            )
-            pc = PointCloud(points=moved, frame=frame)
+            pts = _apply_gate_rigid_transform(pts, gate_deltas)
+        pc = PointCloud(points=pts, frame=frame)
         pc_ned = frame_graph.convert(pc, to="ned")
         xyz = np.asarray(pc_ned.points, dtype=np.float64)
         if name in gate_objects:
@@ -408,6 +432,7 @@ def _build_miss_gate_criterion(
     miss_gate_cfg: dict,
     *,
     gate_deltas: Optional[dict] = None,
+    scene_cfg: Optional[dict] = None,
 ) -> MissGateCriterion:
     corners = miss_gate_cfg.get("corners")
     if corners is None or len(corners) != 4:
@@ -437,6 +462,36 @@ def _build_miss_gate_criterion(
         # hover-over-stuffed-animal goal. (The goal is task-defined, not
         # gate-defined.) Skip transforming goal.
 
+    # Runtime AABB-transit latch: when the scene declares a `gate_region`,
+    # pass its perturbation-aware AABB to the criterion so GOAL_REACHED
+    # only fires once the drone has been inside the gate at least once.
+    # Without this, an early-graze of the 10cm goal sphere on a still
+    # in-progress approach could cut the rollout short — which the user
+    # explicitly wants to avoid.
+    transit_aabb_min = None
+    transit_aabb_max = None
+    if scene_cfg is not None and scene_cfg.get("gate_region"):
+        region = scene_cfg["gate_region"]
+        aabb_min_raw = np.asarray(region["aabb_min"], dtype=np.float64)
+        aabb_max_raw = np.asarray(region["aabb_max"], dtype=np.float64)
+        if gate_deltas is not None:
+            corners = np.array([
+                [aabb_min_raw[0], aabb_min_raw[1], aabb_min_raw[2]],
+                [aabb_max_raw[0], aabb_min_raw[1], aabb_min_raw[2]],
+                [aabb_min_raw[0], aabb_max_raw[1], aabb_min_raw[2]],
+                [aabb_max_raw[0], aabb_max_raw[1], aabb_min_raw[2]],
+                [aabb_min_raw[0], aabb_min_raw[1], aabb_max_raw[2]],
+                [aabb_max_raw[0], aabb_min_raw[1], aabb_max_raw[2]],
+                [aabb_min_raw[0], aabb_max_raw[1], aabb_max_raw[2]],
+                [aabb_max_raw[0], aabb_max_raw[1], aabb_max_raw[2]],
+            ])
+            moved = _apply_gate_rigid_transform(corners, gate_deltas)
+            transit_aabb_min = moved.min(axis=0)
+            transit_aabb_max = moved.max(axis=0)
+        else:
+            transit_aabb_min = aabb_min_raw
+            transit_aabb_max = aabb_max_raw
+
     return MissGateCriterion(
         corners_arr,
         frame_name=miss_gate_cfg.get("corners_frame", "mocap"),
@@ -448,6 +503,86 @@ def _build_miss_gate_criterion(
             if miss_gate_cfg.get("min_progress_window_s") is not None else None
         ),
         min_progress_m=float(miss_gate_cfg.get("min_progress_m", 0.05)),
+        eval_stop_mode=bool(miss_gate_cfg.get("eval_stop_mode", False)),
+        transit_aabb_min=transit_aabb_min,
+        transit_aabb_max=transit_aabb_max,
+    )
+
+
+def _build_ordered_miss_gate_criterion(
+    cfg: dict,
+    *,
+    scene_cfg: Optional[dict] = None,
+) -> OrderedMissGateCriterion:
+    """YAML schema::
+
+        ordered_miss_gate:
+          corners_frame: mocap
+          gates:
+            - name: gate_1                     # informational only
+              corners: [[x,y,z], ...]          # 4 corners (rectangle order)
+            - name: gate_2
+              corners: [[x,y,z], ...]
+          margin_m: 0.0
+          goal_position: [x, y, z]
+          goal_tolerance_m: 0.30
+          min_progress_window_s: 4.0
+          min_progress_m: 0.05
+          eval_stop_mode: false   # optional; True disables in-flight
+                                  # plane-cross check and uses per-gate
+                                  # AABB latches from `scene_cfg.gate_regions`
+
+    When ``eval_stop_mode=True``, the criterion needs each gate's MOCAP
+    AABB to drive the per-gate transit latch + goal-proximity stop. We
+    pull those from ``scene_cfg.gate_regions`` (plural — list of two
+    entries, in gate-1 / gate-2 order matching ``gates`` above).
+    """
+    gates = cfg.get("gates") or []
+    if len(gates) != 2:
+        raise ValueError(
+            f"safety.ordered_miss_gate.gates must have exactly 2 entries; got {len(gates)}"
+        )
+    c1 = np.asarray(gates[0]["corners"], dtype=np.float64)
+    c2 = np.asarray(gates[1]["corners"], dtype=np.float64)
+    goal = cfg.get("goal_position")
+    goal_arr = np.asarray(goal, dtype=np.float64) if goal is not None else None
+    eval_stop = bool(cfg.get("eval_stop_mode", False))
+
+    transit_aabb_1_min = transit_aabb_1_max = None
+    transit_aabb_2_min = transit_aabb_2_max = None
+    if eval_stop and scene_cfg is not None:
+        regions = scene_cfg.get("gate_regions") or []
+        if len(regions) != 2:
+            raise ValueError(
+                "ordered_miss_gate.eval_stop_mode requires "
+                "scene_cfg.gate_regions to declare exactly 2 entries"
+            )
+        for r in regions:
+            if r.get("aabb_frame", "mocap") != "mocap":
+                raise NotImplementedError(
+                    "gate_regions.aabb_frame == 'mocap' only"
+                )
+        transit_aabb_1_min = np.asarray(regions[0]["aabb_min"], dtype=np.float64)
+        transit_aabb_1_max = np.asarray(regions[0]["aabb_max"], dtype=np.float64)
+        transit_aabb_2_min = np.asarray(regions[1]["aabb_min"], dtype=np.float64)
+        transit_aabb_2_max = np.asarray(regions[1]["aabb_max"], dtype=np.float64)
+
+    return OrderedMissGateCriterion(
+        c1, c2,
+        frame_name=cfg.get("corners_frame", "mocap"),
+        margin_m=float(cfg.get("margin_m", 0.0)),
+        goal_position=goal_arr,
+        goal_tolerance_m=float(cfg.get("goal_tolerance_m", 0.30)),
+        min_progress_window_s=(
+            float(cfg["min_progress_window_s"])
+            if cfg.get("min_progress_window_s") is not None else None
+        ),
+        min_progress_m=float(cfg.get("min_progress_m", 0.05)),
+        eval_stop_mode=eval_stop,
+        transit_aabb_1_min=transit_aabb_1_min,
+        transit_aabb_1_max=transit_aabb_1_max,
+        transit_aabb_2_min=transit_aabb_2_min,
+        transit_aabb_2_max=transit_aabb_2_max,
     )
 
 

@@ -374,6 +374,106 @@ def _load_rigid_transform_aabb(spec: dict) -> RigidTransformAABB:
 register_edit_loader("rigid_transform_aabb", _load_rigid_transform_aabb)
 
 
+# ---------------------------------------------------------------------------
+# duplicate_aabb
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DuplicateAABB(RigidTransformAABB):
+    """Copy a region of Gaussians and place the copy at a new pose.
+
+    Identical field shape to :class:`RigidTransformAABB` (same selection
+    semantics: ``broad ∪ precise − exclude``; same rigid-transform solve
+    via ``source_anchor / target_anchor / source_normal / target_normal``).
+    Only the **write-back** differs: instead of mutating the masked
+    Gaussians in place, the appliers append a transformed copy of the
+    masked subset so both the original *and* the moved copy end up in
+    the scene.
+
+    Used by the compositional eval scenes (``left_and_center``,
+    ``right_and_center``) to keep the original gate where the trained
+    checkpoint expects it *and* add a second gate at the center anchor —
+    without authoring a new gsplat asset.
+
+    YAML::
+
+      scene_edits:
+        - name: duplicate_left_gate_to_center
+          type: duplicate_aabb
+          target_aabb_frame: mocap
+          target_aabb_min: [0.51, 0.27, 0.07]
+          target_aabb_max: [1.21, 1.12, 1.97]
+          transform:
+            source_anchor: [0.86, 0.69, 0.07]
+            target_anchor: [2.5, -0.25, 0.0]
+            source_normal: [0.749, 0.663, 0.0]
+            target_normal: [0.0, -1.0, 0.0]
+          applies_to_scene_objects: [gate]
+
+    Caveats
+    -------
+    - Spherical-harmonic coefficients (``features_dc`` / ``features_rest``)
+      are copied without rotation when the pipeline applier expands the
+      gsplat. For a true rigid transform of the *lighting environment*
+      they would be rotated, but for our compositional scenes (drone is
+      the only thing in motion and the gate's view-dependent appearance
+      is shallow) this is an acceptable approximation — the same one
+      ``RigidTransformAABB`` already makes for the moved gate in
+      ``center_gate.yaml``.
+    - Output of the appliers is **longer** than the input. Callers that
+      assume preserved length (none in falsify today) must be updated.
+    """
+    type: str = "duplicate_aabb"
+
+
+def _load_duplicate_aabb(spec: dict) -> DuplicateAABB:
+    tr = spec.get("transform", {})
+    includes = tuple(
+        _Box(min=e["min"], max=e["max"])
+        for e in (spec.get("include_aabbs") or [])
+    )
+    excludes = tuple(
+        _Box(min=e["min"], max=e["max"])
+        for e in (spec.get("exclude_aabbs") or [])
+    )
+    ori_inc = tuple(
+        _OrientedBox(
+            center=np.asarray(e["center"], dtype=np.float64),
+            half_extents=np.asarray(e["half_extents"], dtype=np.float64),
+            yaw=float(e.get("yaw", 0.0)),
+        )
+        for e in (spec.get("oriented_include_aabbs") or [])
+    )
+    ori_exc = tuple(
+        _OrientedBox(
+            center=np.asarray(e["center"], dtype=np.float64),
+            half_extents=np.asarray(e["half_extents"], dtype=np.float64),
+            yaw=float(e.get("yaw", 0.0)),
+        )
+        for e in (spec.get("oriented_exclude_aabbs") or [])
+    )
+    return DuplicateAABB(
+        name=spec["name"],
+        target_aabb_frame=spec.get("target_aabb_frame", "mocap"),
+        target_aabb_min=np.asarray(spec["target_aabb_min"], dtype=np.float64),
+        target_aabb_max=np.asarray(spec["target_aabb_max"], dtype=np.float64),
+        source_anchor=np.asarray(tr["source_anchor"], dtype=np.float64),
+        target_anchor=np.asarray(tr["target_anchor"], dtype=np.float64),
+        source_normal=np.asarray(tr["source_normal"], dtype=np.float64),
+        target_normal=np.asarray(tr["target_normal"], dtype=np.float64),
+        transform_frame=spec.get("transform_frame", "mocap"),
+        applies_to_scene_objects=tuple(spec.get("applies_to_scene_objects", []) or []),
+        include_aabbs=includes,
+        exclude_aabbs=excludes,
+        oriented_include_aabbs=ori_inc,
+        oriented_exclude_aabbs=ori_exc,
+    )
+
+
+register_edit_loader("duplicate_aabb", _load_duplicate_aabb)
+
+
 def load_scene_edits(scene_cfg: dict) -> list[SceneEdit]:
     """Parse ``scene_cfg["scene_edits"]`` into typed SceneEdit objects."""
     out: list[SceneEdit] = []
@@ -507,14 +607,23 @@ def apply_edits_to_arrays(
         R = T_ns.R
         s = getattr(T_ns, "s", 1.0)
         t = T_ns.t
-        means_ns[mask] = (s * (R @ means_ns[mask].T)).T + t
+        transformed_means = (s * (R @ means_ns[mask].T)).T + t
         if new_quats is not None:
             q_R_xyzw = _rotation_to_quat_xyzw(R)
             q_R_wxyz = _xyzw_to_wxyz(q_R_xyzw)
-            new_quats[mask] = _quat_product_wxyz(
-                q_R_wxyz, new_quats[mask],
-            )
-        # Invalidate cache — means moved.
+            transformed_quats = _quat_product_wxyz(q_R_wxyz, new_quats[mask])
+        if isinstance(edit, DuplicateAABB):
+            # Copy semantics: original Gaussians stay; transformed copies
+            # are appended.
+            means_ns = np.concatenate([means_ns, transformed_means], axis=0)
+            if new_quats is not None:
+                new_quats = np.concatenate([new_quats, transformed_quats], axis=0)
+        else:
+            # Move semantics: original Gaussians are overwritten in place.
+            means_ns[mask] = transformed_means
+            if new_quats is not None:
+                new_quats[mask] = transformed_quats
+        # Invalidate cache — means moved or appended.
         means_authored_cache.clear()
 
     return means_ns, new_quats
@@ -533,7 +642,14 @@ def apply_edits_to_scene_object(
     — it keeps the inspector / waypoint visualizer in sync with what the
     rendered model will produce. AABB masking is **not** applied here; if
     the user named a scene object in ``applies_to_scene_objects``, the
-    whole cloud is treated as that object and transformed wholesale.
+    whole cloud is treated as that object.
+
+    Length semantics
+    ----------------
+    - ``RigidTransformAABB`` (move): output has the same length as input.
+    - ``DuplicateAABB`` (copy): output grows by the input length each time
+      a matching duplicate fires — the transformed copy is appended so the
+      cloud reflects both the original and the moved gate.
     """
     pts = np.asarray(points_in_authored_frame, dtype=np.float64).copy()
     for edit in edits:
@@ -544,22 +660,41 @@ def apply_edits_to_scene_object(
         # exclusion — those are Gaussian-level concerns handled in
         # ``apply_edits_to_pipeline`` / ``apply_edits_to_arrays``.
         T = edit.transform_in_authored_frame()
-        pts = (T.R @ pts.T).T + T.t
+        transformed = (T.R @ pts.T).T + T.t
+        if isinstance(edit, DuplicateAABB):
+            # Append a transformed copy; originals stay.
+            pts = np.concatenate([pts, transformed], axis=0)
+        else:
+            pts = transformed
     return pts
 
 
 def apply_edits_to_pipeline(pipeline, edits: Sequence[SceneEdit], frame_graph: FrameGraph) -> int:
-    """Apply edits in place to ``pipeline.model.means`` / ``.quats``.
+    """Apply edits in place to ``pipeline.model``.
 
-    Returns the total number of Gaussians touched (summed across edits).
-    Uses torch when the model fields are tensors; otherwise falls back
-    to numpy.
+    For ``RigidTransformAABB`` (move) the Gaussian count stays constant —
+    selected rows of ``means`` / ``quats`` are rewritten in place.
+
+    For ``DuplicateAABB`` (copy) the Gaussian count grows. The selected
+    rows of ``means`` / ``quats`` are *appended* (with the rigid transform
+    applied), and every other per-Gaussian field on the model
+    (``scales``, ``opacities``, ``features_dc``, ``features_rest``) is
+    expanded by appending the same source rows verbatim. The new tensors
+    are wrapped in fresh ``nn.Parameter`` instances and assigned back to
+    the model — same mechanism splatfacto already uses for density
+    refinement, so the renderer keeps working.
+
+    Returns the total number of Gaussians touched: moves + duplications.
+    Uses torch when the model fields are tensors; otherwise falls back to
+    numpy.
     """
     n_touched = 0
     try:
         import torch
+        from torch import nn
     except ImportError:
         torch = None  # type: ignore
+        nn = None  # type: ignore
 
     model = pipeline.model
     means = model.means
@@ -572,6 +707,12 @@ def apply_edits_to_pipeline(pipeline, edits: Sequence[SceneEdit], frame_graph: F
     else:
         means_np = np.asarray(means, dtype=np.float64).copy()
         quats_np = None if quats is None else np.asarray(quats, dtype=np.float64).copy()
+
+    # ORIGINAL Gaussian indices that need their per-Gaussian fields
+    # (scales / opacities / features) duplicated, in submission order.
+    # ``means_np`` and ``quats_np`` grow inside the loop; for the other
+    # fields we apply all expansions in one pass at the end.
+    duplicate_source_indices: list[np.ndarray] = []
 
     authored_cache: dict[str, np.ndarray] = {}
 
@@ -610,30 +751,129 @@ def apply_edits_to_pipeline(pipeline, edits: Sequence[SceneEdit], frame_graph: F
             continue
         T_ns = edit.transform_in("ns", frame_graph)
         R, s, t = T_ns.R, getattr(T_ns, "s", 1.0), T_ns.t
-        means_np[mask] = (s * (R @ means_np[mask].T)).T + t
+        transformed_means = (s * (R @ means_np[mask].T)).T + t
         if quats_np is not None:
             q_R_xyzw = _rotation_to_quat_xyzw(R)
             q_R_wxyz = _xyzw_to_wxyz(q_R_xyzw)
-            quats_np[mask] = _quat_product_wxyz(q_R_wxyz, quats_np[mask])
+            transformed_quats = _quat_product_wxyz(q_R_wxyz, quats_np[mask])
+        if isinstance(edit, DuplicateAABB):
+            # Append transformed copies. Originals stay in place.
+            idx = np.where(mask)[0].astype(np.int64)
+            duplicate_source_indices.append(idx)
+            means_np = np.concatenate([means_np, transformed_means], axis=0)
+            if quats_np is not None:
+                quats_np = np.concatenate([quats_np, transformed_quats], axis=0)
+        else:
+            # In-place move.
+            means_np[mask] = transformed_means
+            if quats_np is not None:
+                quats_np[mask] = transformed_quats
         n_touched += int(mask.sum())
         authored_cache.clear()
+
+    grew = len(duplicate_source_indices) > 0
 
     if use_torch:
         device = means.device
         dtype = means.dtype
-        new_means = torch.tensor(means_np, device=device, dtype=dtype)
-        with torch.no_grad():
-            means.data.copy_(new_means)
-        if quats_np is not None and quats is not None:
-            new_quats = torch.tensor(quats_np, device=quats.device, dtype=quats.dtype)
+        # nerfstudio splatfacto v2 / sagesplat keep all per-Gaussian
+        # tensors inside ``model.gauss_params`` (a ``nn.ParameterDict``);
+        # ``model.means`` etc. are properties that delegate to it. When the
+        # container is present we MUST mutate via the dict — overwriting
+        # ``model.means`` directly clashes with the property setter. For
+        # legacy splatfacto layouts that don't have gauss_params we fall
+        # back to direct attribute assignment.
+        gp = getattr(model, "gauss_params", None)
+        if grew:
+            # Replace nn.Parameters wholesale — same mechanism splatfacto
+            # uses for density refinement, so the render path picks up the
+            # new count automatically.
+            new_means_t = torch.tensor(means_np, device=device, dtype=dtype)
+            new_quats_t = None
+            if quats_np is not None and quats is not None:
+                new_quats_t = torch.tensor(
+                    quats_np, device=quats.device, dtype=quats.dtype,
+                )
+            full_idx = np.concatenate(duplicate_source_indices).astype(np.int64)
+            full_idx_t = torch.as_tensor(full_idx, dtype=torch.long, device=device)
+            if gp is not None:
+                # Write every per-Gaussian tensor (incl. sage extras like
+                # ``affordance`` / ``clip_embeds``) via the ParameterDict.
+                # Features etc. are NOT rotated — the same approximation
+                # RigidTransformAABB already makes for moved Gaussians.
+                gp["means"] = nn.Parameter(
+                    new_means_t, requires_grad=gp["means"].requires_grad,
+                )
+                if new_quats_t is not None:
+                    gp["quats"] = nn.Parameter(
+                        new_quats_t, requires_grad=gp["quats"].requires_grad,
+                    )
+                for fname, orig in list(gp.items()):
+                    if fname in ("means", "quats"):
+                        continue
+                    appended = orig.detach().index_select(
+                        0, full_idx_t.to(orig.device),
+                    )
+                    new_t = torch.cat([orig.detach(), appended], dim=0)
+                    gp[fname] = nn.Parameter(
+                        new_t, requires_grad=orig.requires_grad,
+                    )
+            else:
+                # Legacy layout: attributes directly on the model.
+                setattr(model, "means", nn.Parameter(
+                    new_means_t, requires_grad=means.requires_grad,
+                ))
+                if new_quats_t is not None:
+                    setattr(model, "quats", nn.Parameter(
+                        new_quats_t, requires_grad=quats.requires_grad,
+                    ))
+                for fname in ("scales", "opacities",
+                              "features_dc", "features_rest"):
+                    orig = getattr(model, fname, None)
+                    if orig is None:
+                        continue
+                    appended = orig.detach().index_select(
+                        0, full_idx_t.to(orig.device),
+                    )
+                    new_t = torch.cat([orig.detach(), appended], dim=0)
+                    setattr(model, fname, nn.Parameter(
+                        new_t, requires_grad=orig.requires_grad,
+                    ))
+        else:
+            # Same-size in-place copy — preserves any optimizer / cache
+            # state that's keyed by tensor identity. Works the same for
+            # both ParameterDict-backed and direct-attribute layouts
+            # because ``model.means`` resolves to the underlying tensor.
+            new_means = torch.tensor(means_np, device=device, dtype=dtype)
             with torch.no_grad():
-                quats.data.copy_(new_quats)
+                means.data.copy_(new_means)
+            if quats_np is not None and quats is not None:
+                new_quats = torch.tensor(quats_np, device=quats.device, dtype=quats.dtype)
+                with torch.no_grad():
+                    quats.data.copy_(new_quats)
     else:
         # Best-effort write-back for non-torch models (mostly for tests).
         try:
-            model.means[:] = means_np
-            if quats_np is not None:
-                model.quats[:] = quats_np
+            if grew:
+                # NumPy fallback: replace the arrays outright; the test
+                # models don't have features/scales/opacities to worry about.
+                model.means = means_np
+                if quats_np is not None:
+                    model.quats = quats_np
+                # Expand auxiliary per-Gaussian arrays if present.
+                full_idx = np.concatenate(duplicate_source_indices).astype(np.int64)
+                for fname in ("scales", "opacities", "features_dc", "features_rest"):
+                    orig = getattr(model, fname, None)
+                    if orig is None:
+                        continue
+                    orig_np = np.asarray(orig)
+                    setattr(model, fname, np.concatenate(
+                        [orig_np, orig_np[full_idx]], axis=0,
+                    ))
+            else:
+                model.means[:] = means_np
+                if quats_np is not None:
+                    model.quats[:] = quats_np
         except Exception:
             pass
 
