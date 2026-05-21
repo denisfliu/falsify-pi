@@ -1,0 +1,28 @@
+# Pure eval, NO start jitter — every trial starts at the scene's
+# nominal `start_position_mocap`, which matches the v7 training
+# distribution center. Use to diff against the dataset's per-episode
+# rollouts without conflating start randomization.
+
+name: pure_no_jitter
+description: |
+  Base left + right gate scenes. Start position is the scene's nominal
+  start_position_mocap (no randomization). Gate is un-perturbed.
+
+n_trials: 20
+master_seed: 0
+
+recipe:
+  start_randomization:
+    enabled: false
+  gate_perturbation:
+    enabled: false
+
+scenes:
+  - scene:        configs/scenes/left_gate.yaml
+    prompt_name:  real_left
+    safety:       configs/safety/left_gate.yaml
+    recovery:     configs/recovery/left_gate_mpc.yaml
+  - scene:        configs/scenes/right_gate.yaml
+    prompt_name:  real_right
+    safety:       configs/safety/right_gate.yaml
+    recovery:     configs/recovery/right_gate_mpc.yaml

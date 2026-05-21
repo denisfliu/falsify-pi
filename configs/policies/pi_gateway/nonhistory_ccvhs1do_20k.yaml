@@ -4,7 +4,7 @@
 
 type: pi_gateway
 
-gateway_url: "ws://moraband.stanford.edu:8766/v1/models/v7-nonhistory"
+gateway_url: "ws://moraband.stanford.edu:8766/v1/models/v7-nh-center"
 api_key:     "${env:PI_API_KEY}"
 
 execute_chunk_size: 25
@@ -19,6 +19,17 @@ action_yaw_index: 3
 camera_map:
   forward:  "observation/rgb/image"
   downward: "observation/wrist_image/rgb/image"
+
+# Match the training-data preprocess exactly:
+#   - exporter.py resizes every render to 256² before PNG encode
+#   - exporter.py flips RGB → BGR before save (configs/embodiments
+#     /carl_dual_mocap.yaml::channel_order=BGR), so the on-disk PNGs hold
+#     BGR bytes labeled "RGB" — the model was trained on those literal
+#     pixels and expects the same channel order at inference.
+# Without these two knobs the v7 finetune sees red/blue-swapped pixels
+# at a different aspect ratio than at training time.
+image_size: 256
+channel_order: "BGR"
 
 server_frame: "mocap"
 

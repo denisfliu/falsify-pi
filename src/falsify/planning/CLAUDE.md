@@ -1,7 +1,9 @@
 # `falsify.planning/` — waypoint-driven trajectory planning
 
-**Status:** spline planner done; MPC / SplatNav planners stubbed in
-sibling skill docs.
+**Status:** `plan_spline` and `plan_mpc` shipped. `plan_mpc` is the
+default recovery planner used by `falsify.recovery.CoursedMpcPlanner`
+and is what every `configs/recovery/*_mpc.yaml` resolves to.
+`plan_splatnav` is still stubbed in its sibling skill doc.
 
 ## Workflow
 
@@ -11,7 +13,9 @@ sibling skill docs.
             ▼  load_course
        Course   (waypoints in MOCAP, total_time, yaw_mode, ...)
             │
-            ▼  plan_spline (default)  /  plan_mpc (future)  /  plan_splatnav (future)
+            ▼  plan_spline (default for offline data)
+            ▼  plan_mpc    (default for recovery; dynamically feasible)
+            ▼  plan_splatnav (future; collision-aware)
    Trajectory NPZ (NED, fps-sampled)
             │
             ▼  TrainingDataExporter
@@ -37,8 +41,9 @@ waypoints:
   - { name: start, p: [...], yaw: 0.0, t: 0.0 }
   - { name: ...,   p: [...] }
   - ...
-velocity_constraints:        # optional; honoured by future MPC planner
-  max_speed_mps: 1.5
+velocity_constraints:        # optional; informational for spline,
+  max_speed_mps: 1.5         # honoured implicitly by plan_mpc via the
+                             # min-time-snap reference + rate bounds
 ```
 
 Per-waypoint `yaw` and `t` are optional. Missing `t`s fill in by
@@ -48,7 +53,22 @@ chord-length between set values; missing `yaw`s resolve per `yaw_mode`.
 
 - `load_course(path) -> Course`, `save_course(course, path) -> Path`
 - `plan_spline(course, frame_graph, *, prompt="") -> Trajectory`
-  (returns ``falsify.training.Trajectory``)
+  (returns ``falsify.training.Trajectory``). Geometric cubic spline
+  through the waypoint positions; fast (~ms); no dynamics.
+- `plan_mpc(course, frame_graph, *, prompt="", start_state_ned=None,
+  total_time_s=None, hz=None, policy_cfg=None, frame_cfg=None,
+  use_rti=True) -> Trajectory`. Builds a `figs.tsplines.min_time_snap`
+  reference through the waypoints and tracks it closed-loop with
+  `figs.control.vehicle_rate_mpc.VehicleRateMPC` (acados-generated IRK
+  integrator for the quadcopter rate-input model). `start_state_ned`
+  is the recovery hook — pass `last_safe_state` as a 10-vector to
+  re-plan from mid-rollout. `frame_cfg` defaults to
+  `configs/frames/figs/carl.json` (drone physical parameters).
+  acados compiles into a fresh `tempfile.TemporaryDirectory` so
+  concurrent planners (e.g. recovery MPC + a future VLA-side MPC)
+  don't fight over `./c_generated_code/`. `use_rti=True` is SQP-RTI
+  (one SQP iteration per tick, ~3× faster than full SQP, byte-identical
+  to 1e-7 m on the gate courses).
 - `perturb_waypoint(course, name, direction, magnitude_m) -> Course`
   — single-shot nudge. `direction ∈ {center, up, down, left, right}`;
   left/right are body-relative (perpendicular to local heading in xy).

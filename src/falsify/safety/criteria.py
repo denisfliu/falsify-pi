@@ -426,6 +426,7 @@ class MissGateCriterion(SafetyCriterion):
         margin_m: float = 0.0,
         goal_position: Optional[np.ndarray] = None,
         goal_tolerance_m: float = 0.30,
+        goal_tolerance_half_extents: Optional[np.ndarray] = None,
         min_progress_window_s: Optional[float] = None,
         min_progress_m: float = 0.05,
         eval_stop_mode: bool = False,
@@ -471,6 +472,26 @@ class MissGateCriterion(SafetyCriterion):
             if goal_position is not None else None
         )
         self.goal_tolerance_m = float(goal_tolerance_m)
+        # Optional axis-aligned box tolerance in the same frame as
+        # `goal_position`. When set, the GOAL_REACHED check uses
+        # `all(|xyz - goal| <= half_extents)` instead of the Euclidean
+        # `||xyz - goal|| <= goal_tolerance_m` sphere. The sphere config
+        # is still honoured by the no-progress check (mode (b)/(d)) so
+        # the legacy field's meaning doesn't silently change.
+        self.goal_tolerance_half_extents: Optional[np.ndarray] = (
+            np.asarray(goal_tolerance_half_extents, dtype=np.float64)
+            if goal_tolerance_half_extents is not None else None
+        )
+        if self.goal_tolerance_half_extents is not None:
+            if self.goal_tolerance_half_extents.shape != (3,):
+                raise ValueError(
+                    "goal_tolerance_half_extents must be a length-3 vector "
+                    f"(got shape {self.goal_tolerance_half_extents.shape})"
+                )
+            if np.any(self.goal_tolerance_half_extents <= 0):
+                raise ValueError(
+                    "goal_tolerance_half_extents components must be > 0"
+                )
         self.min_progress_window_s: Optional[float] = (
             float(min_progress_window_s)
             if min_progress_window_s is not None else None
@@ -612,6 +633,28 @@ class MissGateCriterion(SafetyCriterion):
 
         dist_to_goal = float(np.linalg.norm(xyz - self.goal_xyz))
 
+        # Box-tolerance has priority when configured: the drone must lie
+        # inside the axis-aligned box `goal ± goal_tolerance_half_extents`
+        # for the proximity stop to fire. Otherwise we use the legacy
+        # Euclidean sphere `dist_to_goal <= goal_tolerance_m`.
+        if self.goal_tolerance_half_extents is not None:
+            delta = np.abs(xyz - self.goal_xyz)
+            goal_prox_ok = bool(np.all(delta <= self.goal_tolerance_half_extents))
+            goal_prox_desc = (
+                f"drone inside goal box (|Δ|={delta.tolist()} ≤ "
+                f"half_extents={self.goal_tolerance_half_extents.tolist()})"
+            )
+            goal_prox_value = float(np.max(delta - self.goal_tolerance_half_extents))
+            goal_prox_threshold = 0.0
+        else:
+            goal_prox_ok = dist_to_goal <= self.goal_tolerance_m
+            goal_prox_desc = (
+                f"drone reached goal proximity (d={dist_to_goal:.3f} m "
+                f"≤ {self.goal_tolerance_m:.3f} m)"
+            )
+            goal_prox_value = dist_to_goal
+            goal_prox_threshold = self.goal_tolerance_m
+
         # ---- goal-proximity stop ---------------------------------------
         # In `eval_stop_mode`, fire GOAL_REACHED on goal proximity ONLY
         # when ALL three conditions hold:
@@ -619,7 +662,7 @@ class MissGateCriterion(SafetyCriterion):
         #        (`_ever_inside_aabb`)
         #   (ii) drone is NOT currently inside the AABB (post-transit hover,
         #        not mid-passage about to collide with a post)
-        #   (iii) drone is within `goal_tolerance_m` of the goal
+        #   (iii) drone is in the goal-tolerance region (box or sphere)
         # Without (ii) the loose tolerance would mask collisions: a drone
         # mid-AABB but within goal-prox sphere gets stopped before the
         # collision check fires a step later.
@@ -631,15 +674,14 @@ class MissGateCriterion(SafetyCriterion):
         if (self.eval_stop_mode
                 and transit_ok
                 and outside_aabb
-                and dist_to_goal <= self.goal_tolerance_m):
+                and goal_prox_ok):
             return Violation(
                 description=(
-                    f"drone reached goal proximity (d={dist_to_goal:.3f} m "
-                    f"≤ {self.goal_tolerance_m:.3f} m); stopping rollout — "
+                    f"{goal_prox_desc}; stopping rollout — "
                     f"post-hoc decides SUCCESS vs SKIPPED_GATE"
                 ),
-                value=dist_to_goal,
-                threshold=self.goal_tolerance_m,
+                value=goal_prox_value,
+                threshold=goal_prox_threshold,
                 failure_type=FailureType.GOAL_REACHED,
                 extra={"mode": "goal_reached",
                        "dist_to_goal": dist_to_goal,

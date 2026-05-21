@@ -111,6 +111,22 @@ class PiGatewayConfig:
         "forward":  "observation/rgb/image",
         "downward": "observation/wrist_image/rgb/image",
     })
+    # Pre-server image preprocessing. Both knobs default to "send what
+    # the renderer produced" (legacy behaviour) but the v7 gate-scenes
+    # finetunes need to be told that the training data was authored at
+    # 256² and channel-flipped to BGR by `falsify.training.exporter`. If
+    # we don't replicate both at eval, the model receives
+    # color-swapped + different-aspect images.
+    #
+    # `image_size`     — if set, resize each cam's native render to this
+    #                    square edge (PIL bilinear) before sending. The
+    #                    server still applies its own preprocess on top
+    #                    (v7 = 448² square resize). Set to `null` to skip.
+    # `channel_order`  — "RGB" (default) sends the renderer's RGB pixels
+    #                    verbatim. "BGR" flips channels to match training
+    #                    data that was exported with `channel_order: BGR`.
+    image_size: Optional[int] = None
+    channel_order: str = "RGB"
 
     # Server-side state input key. The Pi client's default `state=` kwarg
     # always emits `observation/joint_position`; the v7 server expects
@@ -252,14 +268,40 @@ class PiGatewayPolicy(Policy):
         if self.cfg.state_dim >= 4:
             state_vec[3] = yaw_to_vla
 
-        # 3) Images — pass NATIVE resolution; the client resizes per the
-        #    server-published image_preprocess contract (v7 = 448²).
+        # 3) Images — replicate the training-export preprocess
+        #    (`falsify.training.exporter`) before handing to the client:
+        #    optional resize to `cfg.image_size`² (PIL bilinear), then
+        #    optional channel flip to BGR. The server's own image_preprocess
+        #    (v7 = 448² square resize) still runs on top — same as it did
+        #    at training time, when it consumed 256² PNGs.
         images: dict[str, np.ndarray] = {}
         native_images: dict[str, np.ndarray] = {}
+        sent_images: dict[str, np.ndarray] = {}
         for cam_name, server_key in self.cfg.camera_map.items():
             rgb_native = obs.require(f"images.{cam_name}")
-            images[server_key] = rgb_native
             native_images[cam_name] = rgb_native
+            sent = rgb_native
+            if self.cfg.image_size is not None and (
+                sent.shape[0] != self.cfg.image_size
+                or sent.shape[1] != self.cfg.image_size
+            ):
+                from PIL import Image as _Image
+                sent = np.asarray(
+                    _Image.fromarray(sent).resize(
+                        (self.cfg.image_size, self.cfg.image_size),
+                        _Image.BILINEAR,
+                    ),
+                    dtype=np.uint8,
+                )
+            if self.cfg.channel_order.upper() == "BGR":
+                sent = sent[..., ::-1].copy()
+            elif self.cfg.channel_order.upper() != "RGB":
+                raise ValueError(
+                    f"PiGatewayPolicy: channel_order must be 'RGB' or "
+                    f"'BGR'; got {self.cfg.channel_order!r}"
+                )
+            images[server_key] = sent
+            sent_images[cam_name] = sent
 
         prompt = obs.prompt or self.cfg.prompt
         # Use `states=` (plural) so the state lands under the configured
@@ -341,7 +383,7 @@ class PiGatewayPolicy(Policy):
         if self.cfg.record_dir is not None:
             self._record_query(
                 pos_state.xyz, yaw_ned, pos_mocap, state_vec, prompt,
-                native_images, actions, traj_ned, infer_s,
+                native_images, sent_images, actions, traj_ned, infer_s,
                 raw_actions_array,
             )
         self._query_count += 1
@@ -358,6 +400,7 @@ class PiGatewayPolicy(Policy):
         state_vec_to_vla: np.ndarray,
         prompt: str,
         native_images: dict[str, np.ndarray],
+        sent_images: dict[str, np.ndarray],
         actions: np.ndarray,
         traj_ned: Trajectory,
         infer_seconds: float,
@@ -370,6 +413,13 @@ class PiGatewayPolicy(Policy):
 
         for cam_name, rgb in native_images.items():
             _Image.fromarray(rgb).save(qdir / f"rgb_{cam_name}.png")
+        # Also dump the post-preprocess images that we actually handed to
+        # the server — so the channel-order / resize transform is visible
+        # in the debug bundle. PIL doesn't know about BGR; if
+        # channel_order=BGR these PNGs hold BGR bytes labeled RGB, exactly
+        # matching the training-data on-disk format.
+        for cam_name, rgb in sent_images.items():
+            _Image.fromarray(rgb).save(qdir / f"sent_{cam_name}.png")
 
         np.save(qdir / "actions.npy", actions)
         if raw_actions is not None:

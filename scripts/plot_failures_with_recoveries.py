@@ -37,10 +37,12 @@ _FAILED_OUTCOMES = frozenset({
 
 # Rollout colours per outcome.
 _ROLLOUT_COLOR = {
+    "SUCCESS":         "rgb( 46, 160,  67)",   # green
     "MISS_GATE":       "rgb(231,  76,  60)",   # red
     "COLLISION_GATE":  "rgb(178,  34,  34)",   # firebrick
     "COLLISION_OTHER": "rgb(150,  80, 180)",   # purple
     "OUT_OF_BOUNDS":   "rgb(120, 120, 120)",   # grey
+    "GOAL_NOT_REACHED":"rgb(255, 165,   0)",   # orange
 }
 # Recovery trajectories share one colour — readability over per-outcome
 # differentiation, since they all represent the same planner output.
@@ -101,6 +103,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--outcomes", nargs="+",
                     default=sorted(_FAILED_OUTCOMES),
                     help="Failure outcomes to include (default: all four).")
+    ap.add_argument("--include-successes", action="store_true",
+                    help="Also overlay SUCCESS trials in green. Has no "
+                         "recovery NPZ to draw (none was triggered), so the "
+                         "rollout polyline is shown alone.")
     ap.add_argument("--max-cloud-points", type=int, default=4000)
     args = ap.parse_args(argv)
 
@@ -108,16 +114,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     from falsify.io import load_yaml, build_frame_graph
     from falsify.visualization import read_ply, subsample
 
-    # ---- discover failed trials that have a recovery NPZ ----------------
+    # When --include-successes is on, treat SUCCESS as a first-class
+    # outcome alongside the failure set. The success branch is allowed
+    # to skip the recovery_npz existence check (no recovery is triggered
+    # for a SUCCESS rollout, so the NPZ won't be there).
+    success_outcomes = {"SUCCESS"} if args.include_successes else set()
+    accepted_outcomes = set(args.outcomes) | success_outcomes
+
+    # ---- discover trials to plot ---------------------------------------
     trials: list[dict] = []
     n_failed_no_recovery = 0
+    n_success = 0
     for path in sorted(args.campaign.glob("*/trial_*/episode_summary.json")):
         s = json.loads(path.read_text())
-        if s.get("posthoc_outcome") not in args.outcomes:
+        outcome = s.get("posthoc_outcome")
+        if outcome not in accepted_outcomes:
             continue
         rollout_npz = path.parent / "rollout_states.npz"
         recovery_npz = path.parent / "recovery_trajectory.npz"
         if not rollout_npz.is_file():
+            continue
+        if outcome == "SUCCESS":
+            # SUCCESS trials don't fire a recovery; just plot the rollout.
+            trials.append({"summary": s,
+                           "rollout_npz": rollout_npz,
+                           "recovery_npz": None})
+            n_success += 1
             continue
         if not recovery_npz.is_file():
             n_failed_no_recovery += 1
@@ -127,9 +149,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                        "recovery_npz": recovery_npz})
 
     if not trials:
-        raise SystemExit(f"No failed trials with recovery NPZs under {args.campaign}.")
-    print(f"[plot] {len(trials)} failed trials with recoveries  "
-          f"({n_failed_no_recovery} failed trials had no recovery NPZ)")
+        raise SystemExit(
+            f"No matching trials under {args.campaign} "
+            f"(outcomes={sorted(accepted_outcomes)})."
+        )
+    print(f"[plot] {len(trials) - n_success} failed trials with recoveries  "
+          f"({n_failed_no_recovery} failed trials had no recovery NPZ); "
+          f"{n_success} SUCCESS trials")
 
     by_scene_key: dict[str, list[dict]] = defaultdict(list)
     for t in trials:
@@ -197,10 +223,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         scene_path = REPO_ROOT / s["scene"]
 
         rollout_pos_ned = np.load(t["rollout_npz"], allow_pickle=True)["positions_ned"]
-        recovery_pos_ned = np.load(t["recovery_npz"], allow_pickle=True)["positions_ned"]
-
         rollout_mocap = _ned_to_mocap_via_scene(scene_path, rollout_pos_ned)
-        recovery_mocap = _ned_to_mocap_via_scene(scene_path, recovery_pos_ned)
+
+        # SUCCESS trials carry no recovery NPZ — skip the recovery overlay
+        # entirely for those. For everything else, load + transform once.
+        recovery_mocap = None
+        if t["recovery_npz"] is not None:
+            recovery_pos_ned = np.load(
+                t["recovery_npz"], allow_pickle=True,
+            )["positions_ned"]
+            recovery_mocap = _ned_to_mocap_via_scene(scene_path, recovery_pos_ned)
 
         group = f"{outcome}_{scene_key}_t{trial_idx:03d}"
 
@@ -242,36 +274,38 @@ def main(argv: Optional[list[str]] = None) -> int:
             legendgroup=group,
             showlegend=False,
         ))
-        # Recovery: cyan dashed (per scene dash too).
-        fig.add_trace(go.Scatter3d(
-            x=recovery_mocap[:, 0], y=recovery_mocap[:, 1], z=recovery_mocap[:, 2],
-            mode="lines",
-            line=dict(
-                color=_RECOVERY_COLOR,
-                width=4,
-                dash=_SCENE_DASH.get(scene_key, "solid"),
-            ),
-            name=f"RECV {outcome[:4]} {scene_key} t{trial_idx:03d}",
-            legendgroup=group,
-            hovertemplate=(
-                f"<b>recovery</b><br>"
-                f"scene={scene_key}<br>"
-                f"trial={trial_idx}<br>"
-                "step=%{pointNumber}<br>"
-                "mocap=(%{x:.2f}, %{y:.2f}, %{z:.2f})"
-                "<extra></extra>"
-            ),
-        ))
-        # Recovery seed marker (start of recovery — last-safe state from rollout).
-        fig.add_trace(go.Scatter3d(
-            x=[recovery_mocap[0, 0]], y=[recovery_mocap[0, 1]], z=[recovery_mocap[0, 2]],
-            mode="markers",
-            marker=dict(size=6, color=_RECOVERY_COLOR, symbol="circle-open",
-                        line=dict(width=2, color="black")),
-            name=f"recv-seed t{trial_idx:03d}",
-            legendgroup=group,
-            showlegend=False,
-        ))
+        # Recovery: cyan dashed (per scene dash too). SUCCESS trials have
+        # no recovery — skip the recovery overlay for those.
+        if recovery_mocap is not None:
+            fig.add_trace(go.Scatter3d(
+                x=recovery_mocap[:, 0], y=recovery_mocap[:, 1], z=recovery_mocap[:, 2],
+                mode="lines",
+                line=dict(
+                    color=_RECOVERY_COLOR,
+                    width=4,
+                    dash=_SCENE_DASH.get(scene_key, "solid"),
+                ),
+                name=f"RECV {outcome[:4]} {scene_key} t{trial_idx:03d}",
+                legendgroup=group,
+                hovertemplate=(
+                    f"<b>recovery</b><br>"
+                    f"scene={scene_key}<br>"
+                    f"trial={trial_idx}<br>"
+                    "step=%{pointNumber}<br>"
+                    "mocap=(%{x:.2f}, %{y:.2f}, %{z:.2f})"
+                    "<extra></extra>"
+                ),
+            ))
+            # Recovery seed marker (start of recovery — last-safe state).
+            fig.add_trace(go.Scatter3d(
+                x=[recovery_mocap[0, 0]], y=[recovery_mocap[0, 1]], z=[recovery_mocap[0, 2]],
+                mode="markers",
+                marker=dict(size=6, color=_RECOVERY_COLOR, symbol="circle-open",
+                            line=dict(width=2, color="black")),
+                name=f"recv-seed t{trial_idx:03d}",
+                legendgroup=group,
+                showlegend=False,
+            ))
 
     # ---- layout ----------------------------------------------------------
     by_outcome = defaultdict(int)

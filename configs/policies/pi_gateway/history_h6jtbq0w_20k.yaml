@@ -38,6 +38,11 @@ camera_map:
   forward:  "observation/rgb/image"
   downward: "observation/wrist_image/rgb/image"
 
+# See sister `nonhistory_ccvhs1do_20k.yaml` for why these are required
+# for the v7 gate-scenes finetunes.
+image_size: 256
+channel_order: "BGR"
+
 server_frame: "mocap"
 
 # Real-time correction. Requires the server's loaded checkpoint to export

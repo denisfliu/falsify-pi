@@ -6,8 +6,9 @@ description: Turn a Course YAML (waypoints) into a canonical Trajectory NPZ via 
 # falsify-trajectory-from-waypoints
 
 The "I authored some waypoints, now give me a Trajectory NPZ" step. Default
-planner is cubic spline; when the FiGS-MPC integrator lands this skill
-gains a `--planner mpc` switch with no schema change for callers.
+planner is cubic spline; pass `--planner mpc` to use FiGS' VehicleRateMPC
+instead (same Course YAML, dynamically-feasible output) — see
+`falsify-trajectory-from-mpc`.
 
 ## Inputs
 

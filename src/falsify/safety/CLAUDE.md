@@ -84,7 +84,7 @@ successful transit in `_transit_t` and stamps it into
 | `COLLISION_OTHER` | `PointCloudCollisionCriterion` | drone OBB intersects a non-gate-labelled point |
 | `MISS_GATE` | `MissGateCriterion` | drone failed to navigate the gate. **Legacy mode** (default): three sub-modes — (a) plane-crossing outside aperture (BUGGY for center_gate — disabled in eval_stop_mode), (b) reached goal proximity without transit, (c) no progress toward aperture. **eval_stop_mode**: only emitted as a no-progress stop signal; final MISS_GATE classification is decided post-hoc. |
 | `GOAL_NOT_REACHED` | `MissGateCriterion` | drone *did* transit the aperture but then failed to reach `goal_position` — no progress toward goal in `min_progress_window_s` seconds. The "post-gate hover failed" case. |
-| `GOAL_REACHED` | `MissGateCriterion` (eval_stop_mode only) | drone is within `goal_tolerance_m` of the goal. This is a **success stop signal**, not a failure; the post-hoc classifier resolves SUCCESS vs SKIPPED_GATE. Never in `recovery_triggers`. |
+| `GOAL_REACHED` | `MissGateCriterion` (eval_stop_mode only) | drone is inside the goal-tolerance region (box `goal ± goal_tolerance_half_extents` when set, sphere `goal_tolerance_m` otherwise). This is a **success stop signal**, not a failure; the post-hoc classifier resolves SUCCESS vs SKIPPED_GATE vs MISS_GATE (the last via the directional check). Never in `recovery_triggers`. |
 | `PROXIMITY_COLLISION` | (reserved for future scalar-distance criterion) | |
 | `CUSTOM` | anything without a name-mapping | fallback |
 
@@ -141,10 +141,15 @@ criterion into a **stop-signal-only** mode:
 
 - Mode (a) plane-crossing-outside-aperture is **skipped entirely**. No
   MISS_GATE emitted at runtime for that reason.
-- On goal proximity (``dist <= goal_tolerance_m``), fire
-  `FailureType.GOAL_REACHED` regardless of whether the drone's
-  trajectory crossed the plane inside the rectangle. This is a **success
-  stop signal**, not a failure.
+- On goal proximity, fire `FailureType.GOAL_REACHED` regardless of
+  whether the drone's trajectory crossed the plane inside the
+  rectangle. This is a **success stop signal**, not a failure. The
+  "in proximity" test is either the box `|xyz - goal| ≤
+  goal_tolerance_half_extents` (when configured — current default for
+  the gate scenes) or the legacy Euclidean sphere `||xyz - goal|| ≤
+  goal_tolerance_m`. Box wins when set; sphere is still honoured by
+  the no-progress mode (b)/(d) so the legacy field's meaning doesn't
+  silently change.
 - Stuck check still fires (`MISS_GATE` pre-transit / `GOAL_NOT_REACHED`
   post-transit), but it's just a stop signal — the post-hoc classifier
   reclassifies based on the gate's MOCAP AABB.
@@ -166,9 +171,8 @@ n_states_inside, aabb_mocap}` dict. Outcome is one of:
 
 | Outcome              | Condition                                               |
 |----------------------|--------------------------------------------------------|
-| `SUCCESS`            | runtime fired `GOAL_REACHED` + trajectory entered AABB  |
-| `SKIPPED_GATE`       | runtime fired `GOAL_REACHED` + trajectory never inside  |
-| `MISS_GATE`          | rollout stopped (stuck / timeout / OOB) + never inside  |
+| `SUCCESS`            | runtime fired `GOAL_REACHED` + trajectory entered AABB + (when configured) at least one correct-direction aperture crossing and zero wrong-direction crossings |
+| `MISS_GATE`          | rollout stopped (stuck / timeout / OOB) + never inside; **also** the demotion target when directional check fails (wrong-direction or no correct crossing) |
 | `GOAL_NOT_REACHED`   | rollout stopped + trajectory was inside the AABB        |
 | `COLLISION_GATE`     | runtime fired collision, gate-labeled                   |
 | `COLLISION_OTHER`    | runtime fired collision, other-labeled                  |
@@ -176,6 +180,10 @@ n_states_inside, aabb_mocap}` dict. Outcome is one of:
 | `EXCESSIVE_VELOCITY` | runtime fired velocity                                  |
 | `EXCESSIVE_TILT`     | runtime fired tilt                                      |
 | `ERROR`              | orchestrator raised                                     |
+
+`SKIPPED_GATE` is retained as a back-compat alias of `MISS_GATE` and
+no longer appears as a distinct outcome — both mean "drone never went
+through the gate" under the post-hoc rule.
 
 The campaign runner (`scripts/run_eval_campaign.py`) writes
 `posthoc_outcome` + `transited` + transit-step indices into each trial's
@@ -187,6 +195,38 @@ runtime stop-signal histogram) is kept as a diagnostic alongside.
 The gate AABB consumed by the classifier lives on each scene YAML under
 `gate_region.aabb_frame` + `aabb_min` + `aabb_max` (MOCAP only today).
 The same block is used by `GateRigidPerturbation` for Gaussian selection.
+
+### Directional gate-transit check (`expected_dy_sign`)
+
+When the trial card's `scene_key` ends in `_from_left` or `_from_right`,
+`run_eval_campaign.py` derives `expected_dy_sign` and passes it to
+`classify_trajectory_posthoc`:
+
+| Suffix      | `expected_dy_sign` | Interpretation              |
+|-------------|--------------------|-----------------------------|
+| `_from_left`  | `-1` | drone must cross the gate plane in -y (mocap) |
+| `_from_right` | `+1` | drone must cross the gate plane in +y (mocap) |
+
+`check_directional_transit` walks the trajectory segment-by-segment,
+detects crossings of the gate's mid-y plane, checks the interpolated
+(x, z) at each crossing against the AABB extents, and records the sign
+of `dy` for crossings inside the aperture. Crossings outside the
+aperture (e.g. the drone dipping below the gate plane upstream of the
+gate, then curving around to enter the AABB from behind) are ignored.
+
+The post-hoc classifier then:
+
+- demotes a runtime `GOAL_REACHED` to `MISS_GATE` if there are zero
+  correct-direction crossings or any wrong-direction crossing;
+- on no-progress / timeout, classifies `MISS_GATE` if no correct
+  crossing, `GOAL_NOT_REACHED` otherwise.
+
+Scenes without the `_from_*` suffix (e.g. `left_gate`, `right_gate`)
+skip the directional check and use the legacy "any AABB touch counts
+as transit" rule. To re-apply this check to already-captured campaigns
+without re-rolling, use `scripts/reclassify_campaign.py` — it walks the
+trial dirs, re-classifies, and rewrites the per-trial summaries +
+`campaign_summary.json` (with `*.json.bak` backups on first run).
 
 ## Adding a criterion
 

@@ -64,9 +64,11 @@ out). Differences are in transport and configurability:
 - **Transport**: WSS gateway + `Api-Key` header via
   `pi_inference_client.PolicyClient`. `pi_inference_client` is imported
   lazily — falsify loads without the wheel installed.
-- **Image resolution**: server-driven. The client reads the server's
-  `image_preprocess` contract on connect and resizes natively
-  (v7 gate-scenes = 448²). Do not pre-resize on the falsify side.
+- **Image resolution + channel order**: see "Preprocess parity" below.
+  In short: the v7 finetunes were trained on 256² BGR PNGs, so the
+  policy YAMLs must set `image_size: 256` and `channel_order: "BGR"`
+  to match. Older comments calling out 448² + "do not pre-resize"
+  referred to the *server's* preprocess, which still runs on top.
 - **Cameras**: a `camera_map: {falsify_name: server_key}` block in YAML
   decides modality→payload-key mapping; the v7 finetunes use
   `forward → observation/image`, `downward → observation/wrist_image`
@@ -82,6 +84,38 @@ out). Differences are in transport and configurability:
   recorder writes alongside each query bundle.
 
 Variant configs live under `configs/policies/pi_gateway/`.
+
+### Preprocess parity with the training data
+
+`falsify.training.exporter` writes per-frame PNGs as follows:
+`render at native intrinsics → PIL bilinear resize to cam.image_size →
+RGB → BGR (when embodiment.channel_order == "BGR") → PNG`. The dronevla
+v7 finetunes were trained on `image_size: 256, channel_order: BGR`
+(see `configs/embodiments/carl_dual_mocap.yaml`). The on-disk PNGs hold
+BGR pixels labeled "RGB" — PIL doesn't enforce channel meaning by mode.
+
+To match this at inference, `PiGatewayPolicy` accepts two YAML knobs:
+
+| YAML key         | Type / default | Behaviour |
+|------------------|----------------|-----------|
+| `image_size`     | `int \| null` (default `null`) | Pre-server resize: PIL bilinear to (size, size) before sending. |
+| `channel_order`  | `"RGB"` (default) / `"BGR"`    | When `"BGR"`, applies `img[..., ::-1]` before sending. |
+
+Both default to "send what the renderer produced" so legacy configs are
+unaffected. **The v7 gate-scenes finetunes require both:**
+
+```yaml
+image_size: 256
+channel_order: "BGR"
+```
+
+Currently set in `nonhistory_ccvhs1do_20k.yaml`,
+`nonhistory_real_center.yaml`, and `history_h6jtbq0w_20k.yaml`.
+
+Debug bundles record both the native render (`rgb_<cam>.png`, what the
+renderer produced) and the post-preprocess image actually sent
+(`sent_<cam>.png`). The latter holds BGR bytes labeled RGB exactly
+matching the training PNGs.
 
 ### Where the gateway runs
 

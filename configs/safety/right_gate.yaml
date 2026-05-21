@@ -30,7 +30,9 @@ miss_gate:
   # Hover-over-stuffed-animal goal for the right-gate scene.
   # (scene's goal_position_mocap = [1.50, -1.15, 1.50].)
   goal_position: [1.50, -1.15, 1.50]
-  goal_tolerance_m: 1.50            # see configs/safety/left_gate.yaml
+  # See configs/safety/center_gate.yaml + left_gate.yaml for the rationale.
+  goal_tolerance_half_extents: [0.3, 0.3, 0.5]
+  goal_tolerance_m: 1.50            # legacy sphere — unused when box is set
   min_progress_window_s: 4.0
   min_progress_m: 0.05
   eval_stop_mode: true              # see configs/safety/left_gate.yaml

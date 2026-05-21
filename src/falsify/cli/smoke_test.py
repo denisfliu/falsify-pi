@@ -182,6 +182,8 @@ def _policy_factory_from_yaml(policy_cfg: dict, *, scene_cfg=None, scene_dir=Non
             state_key=policy_cfg.get("state_key", "observation/state"),
             server_frame=policy_cfg.get("server_frame", "mocap"),
             use_rtc=bool(policy_cfg.get("use_rtc", False)),
+            image_size=policy_cfg.get("image_size"),
+            channel_order=str(policy_cfg.get("channel_order", "RGB")),
             traceability=dict(policy_cfg.get("traceability") or {}),
             record_dir=record_dir_arg,
         )
@@ -492,12 +494,19 @@ def _build_miss_gate_criterion(
             transit_aabb_min = aabb_min_raw
             transit_aabb_max = aabb_max_raw
 
+    half_extents = miss_gate_cfg.get("goal_tolerance_half_extents")
+    half_extents_arr = (
+        np.asarray(half_extents, dtype=np.float64)
+        if half_extents is not None else None
+    )
+
     return MissGateCriterion(
         corners_arr,
         frame_name=miss_gate_cfg.get("corners_frame", "mocap"),
         margin_m=float(miss_gate_cfg.get("margin_m", 0.0)),
         goal_position=goal_arr,
         goal_tolerance_m=float(miss_gate_cfg.get("goal_tolerance_m", 0.30)),
+        goal_tolerance_half_extents=half_extents_arr,
         min_progress_window_s=(
             float(miss_gate_cfg["min_progress_window_s"])
             if miss_gate_cfg.get("min_progress_window_s") is not None else None

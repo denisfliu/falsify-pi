@@ -47,7 +47,9 @@ src/falsify/
 │                  PiGatewayPolicy (pi-inference-client gateway → Pi-hosted
 │                  or self-hosted via pi_local_bridge/)
 ├── safety/        Pluggable safety criteria + FailureDetector with last-safe tracking
-├── recovery/      SplatNavPlanner — NED in, NED out
+├── recovery/      CoursedMpcPlanner (default; FiGS VehicleRateMPC over a
+│                  course, started from last_safe_state) + SplatNavPlanner
+│                  (A*+spline fallback, NED in / NED out)
 ├── perturbations/ three surfaces (action / observation / environment) + JSON manifest
 ├── cem/           Cross-Entropy Method falsification — GaussianBoxDistribution
 │                  over the 6-d (start_dxyz, gate_dxy, gate_dyaw) vector,
@@ -55,7 +57,8 @@ src/falsify/
 ├── orchestrator/  run_episode + FalsificationEpisode
 ├── visualization/ per-frame ply dumps + html replay
 ├── training/      Trajectory NPZ → LeRobot-style parquet (image + state + action)
-├── planning/      Course YAML → Trajectory NPZ via cubic spline (MPC stub)
+├── planning/      Course YAML → Trajectory NPZ via cubic spline or FiGS
+│                  VehicleRateMPC (acados IRK; SQP-RTI by default)
 ├── io/            YAML config loaders + build_frame_graph
 └── cli/           smoke_test, visualize_frames, run_vla_episode, export_training_data,
                    visualize_waypoints, plan_trajectory
@@ -107,6 +110,50 @@ gates per scene + combined prompt) is planned but not yet wired.
 
 See ``configs/eval_suite/README.md`` for the YAML schema and the
 determinism contract.
+
+### Success criterion — current contract
+
+SUCCESS posthoc requires **all three** of:
+
+1. The runtime fired ``GOAL_REACHED`` — i.e. the drone (a) was inside the
+   gate AABB at least once (the ``MissGateCriterion._transit_aabb_*``
+   latch) and (b) is currently within the **goal-tolerance region**,
+   which is an axis-aligned box ``goal ± half_extents`` when
+   ``safety.miss_gate.goal_tolerance_half_extents`` is set (the
+   default for the gate scenes), or the legacy
+   ``goal_tolerance_m`` sphere otherwise.
+2. ``check_directional_transit`` records at least one
+   correct-direction crossing of the gate's mid-y plane inside the
+   aperture (x/z extents of the gate AABB).
+3. No wrong-direction crossings inside the aperture.
+
+The expected crossing direction is derived from the trial card's
+``scene_key`` suffix: ``_from_left`` ⇒ ``dy < 0``, ``_from_right`` ⇒
+``dy > 0``. Other scene keys (``left_gate``, ``right_gate``) skip the
+directional check and use the legacy "any aperture crossing counts" rule.
+
+When directional enforcement triggers a demotion (wrong-direction or
+no correct crossing), the trial is classified ``MISS_GATE``. See
+``src/falsify/safety/posthoc.py``.
+
+### v7 finetune policy preprocess
+
+Every ``configs/policies/pi_gateway/*.yaml`` for the **v7 gate-scenes
+finetunes** (`pi07_history`, `pi07_nonhistory`, `pi07_center_only`,
+`pi07_center_and_real`) must set:
+
+```yaml
+image_size: 256        # resize each cam to 256x256 before sending
+channel_order: "BGR"   # flip RGB → BGR before sending
+```
+
+Both knobs match the training-data preprocess in
+``src/falsify/training/exporter.py`` (PIL bilinear resize to
+``cam.image_size`` and ``img[..., ::-1]`` when ``channel_order==BGR``).
+Without them, the policy sees red/blue-swapped pixels at a different
+aspect ratio than at training time, which empirically tanks the
+SUCCESS rate. See ``src/falsify/policy/CLAUDE.md§ Preprocess parity``
+for the full rationale.
 
 ## Producing training data
 

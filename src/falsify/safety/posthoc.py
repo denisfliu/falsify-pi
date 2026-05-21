@@ -98,6 +98,25 @@ class TransitResult:
     aabb_max_mocap: np.ndarray
 
 
+@dataclass
+class DirectionalTransitResult:
+    """Output of the signed gate-plane crossing scan.
+
+    A "crossing" is a step where consecutive trajectory states sit on
+    opposite sides of the gate's mid-y plane AND the interpolated (x, z)
+    of the intersection lies inside the gate AABB's x/z extents — i.e.
+    the drone actually passed through the gate aperture region, not
+    around it.
+    """
+
+    correct_crossings: int            # crossings whose dy sign matches expected
+    wrong_crossings: int              # crossings whose dy sign opposes expected
+    first_correct_step: Optional[int]
+    first_wrong_step: Optional[int]
+    expected_dy_sign: int             # +1 or -1
+    gate_plane_y_mocap: float
+
+
 def _gate_aabb_mocap(
     scene_cfg: dict,
     gate_deltas_mocap: Optional[dict],
@@ -184,6 +203,87 @@ def _compositional_phase_from_history(
     return "post_gate_2"
 
 
+def check_directional_transit(
+    positions_mocap: np.ndarray,
+    aabb_min: np.ndarray,
+    aabb_max: np.ndarray,
+    *,
+    expected_dy_sign: int,
+) -> DirectionalTransitResult:
+    """Count signed crossings of the gate's mid-y plane inside the AABB.
+
+    The gate plane is at ``(aabb_min.y + aabb_max.y) / 2`` (mocap). A
+    "crossing" is a step ``i → i+1`` where the y-component changes sign
+    relative to that plane and where the linearly-interpolated (x, z) at
+    the crossing lands inside ``[aabb_min.xz, aabb_max.xz]``. The sign
+    of the crossing is ``sign(positions[i+1].y - positions[i].y)``.
+
+    ``expected_dy_sign`` must be ``+1`` or ``-1`` — the dy sign that a
+    *correct* transit produces for this prompt direction. Crossings that
+    match are counted as ``correct_crossings``; opposite-sign crossings
+    are counted as ``wrong_crossings``.
+    """
+    if expected_dy_sign not in (-1, 1):
+        raise ValueError(
+            f"expected_dy_sign must be -1 or 1, got {expected_dy_sign}"
+        )
+    if positions_mocap.ndim != 2 or positions_mocap.shape[1] != 3:
+        raise ValueError(
+            f"positions_mocap must be (N, 3); got {positions_mocap.shape}"
+        )
+
+    y_plane = 0.5 * (float(aabb_min[1]) + float(aabb_max[1]))
+    x_lo, x_hi = float(aabb_min[0]), float(aabb_max[0])
+    z_lo, z_hi = float(aabb_min[2]), float(aabb_max[2])
+
+    correct = 0
+    wrong = 0
+    first_correct: Optional[int] = None
+    first_wrong: Optional[int] = None
+
+    dy_signs = positions_mocap[1:, 1] - positions_mocap[:-1, 1]
+    side_prev = positions_mocap[:-1, 1] - y_plane
+    side_next = positions_mocap[1:, 1] - y_plane
+
+    # Segment crosses the plane iff signs differ (and neither is exactly
+    # zero straddling the plane).
+    crosses = (side_prev * side_next) < 0
+
+    for i in np.where(crosses)[0]:
+        # Interpolate (x, z) at the crossing.
+        sp = side_prev[i]
+        sn = side_next[i]
+        # Fraction along the segment where y == y_plane.
+        # |sp| / (|sp| + |sn|) is the standard linear interp; the sign
+        # cancels because sp and sn have opposite sign.
+        t = float(sp / (sp - sn))
+        x_cross = float(positions_mocap[i, 0] + t * (positions_mocap[i + 1, 0]
+                                                     - positions_mocap[i, 0]))
+        z_cross = float(positions_mocap[i, 2] + t * (positions_mocap[i + 1, 2]
+                                                     - positions_mocap[i, 2]))
+        if not (x_lo <= x_cross <= x_hi and z_lo <= z_cross <= z_hi):
+            continue  # plane crossing outside the aperture — ignore
+        dy = float(dy_signs[i])
+        dy_sign = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        if dy_sign == expected_dy_sign:
+            correct += 1
+            if first_correct is None:
+                first_correct = int(i)
+        elif dy_sign == -expected_dy_sign:
+            wrong += 1
+            if first_wrong is None:
+                first_wrong = int(i)
+
+    return DirectionalTransitResult(
+        correct_crossings=correct,
+        wrong_crossings=wrong,
+        first_correct_step=first_correct,
+        first_wrong_step=first_wrong,
+        expected_dy_sign=int(expected_dy_sign),
+        gate_plane_y_mocap=y_plane,
+    )
+
+
 def check_transit(
     positions_mocap: np.ndarray,
     scene_cfg: dict,
@@ -227,6 +327,7 @@ def classify_trajectory_posthoc(
     n_states: int,
     gate_deltas_mocap: Optional[dict] = None,
     runtime_error: bool = False,
+    expected_dy_sign: Optional[int] = None,
 ) -> dict:
     """Decide the final outcome of a trial.
 
@@ -336,20 +437,58 @@ def classify_trajectory_posthoc(
         "aabb_mocap": [tr.aabb_min_mocap.tolist(), tr.aabb_max_mocap.tolist()],
     }
 
+    # ---- directional gate-transit check ---------------------------------
+    # When the prompt is direction-sensitive (e.g. center_gate_from_left
+    # requires crossing the gate plane in -y; from_right in +y), demand
+    # at least one correct-direction crossing inside the aperture and zero
+    # wrong-direction crossings. Otherwise the trial is a MISS_GATE
+    # regardless of what the runtime stopped on.
+    directional_result: Optional[DirectionalTransitResult] = None
+    if expected_dy_sign is not None:
+        directional_result = check_directional_transit(
+            positions_mocap,
+            tr.aabb_min_mocap,
+            tr.aabb_max_mocap,
+            expected_dy_sign=expected_dy_sign,
+        )
+        base["expected_dy_sign"]  = int(expected_dy_sign)
+        base["gate_plane_y_mocap"] = directional_result.gate_plane_y_mocap
+        base["correct_crossings"] = directional_result.correct_crossings
+        base["wrong_crossings"]   = directional_result.wrong_crossings
+        base["first_correct_crossing_step"] = directional_result.first_correct_step
+        base["first_wrong_crossing_step"]   = directional_result.first_wrong_step
+
     if runtime_failure_type == FailureType.GOAL_REACHED:
         # With the runtime AABB-transit latch (MissGateCriterion's
         # `transit_aabb_*` kwargs), GOAL_REACHED cannot fire unless the
         # drone has been inside the gate AABB at least once — so SUCCESS
-        # always holds here. The `tr.transited` post-hoc check is a
-        # consistency safeguard; if it disagrees, prefer the runtime
-        # latch's authority (transit happened) and still mark SUCCESS.
-        base["outcome"] = SUCCESS
+        # would normally hold here. With directional-transit enforcement,
+        # we additionally require a correct-direction aperture crossing
+        # and zero wrong-direction crossings; otherwise the goal-prox stop
+        # was reached via the wrong side and the trial is a MISS_GATE.
+        if directional_result is not None and (
+            directional_result.wrong_crossings > 0
+            or directional_result.correct_crossings == 0
+        ):
+            base["outcome"] = MISS_GATE
+        else:
+            base["outcome"] = SUCCESS
         return base
 
     # No-progress stop or timeout — drone never reached the goal.
-    # If it ever entered the gate AABB, it transited but then stalled;
-    # otherwise it never made it through.
-    base["outcome"] = GOAL_NOT_REACHED if tr.transited else MISS_GATE
+    # If a directional check is configured, prefer it: any wrong-direction
+    # aperture crossing demotes to MISS_GATE even if the drone re-entered
+    # the AABB later. Otherwise fall back to the legacy
+    # "GOAL_NOT_REACHED if any state inside AABB" rule.
+    if directional_result is not None:
+        if directional_result.wrong_crossings > 0:
+            base["outcome"] = MISS_GATE
+        elif directional_result.correct_crossings > 0:
+            base["outcome"] = GOAL_NOT_REACHED
+        else:
+            base["outcome"] = MISS_GATE
+    else:
+        base["outcome"] = GOAL_NOT_REACHED if tr.transited else MISS_GATE
     return base
 
 

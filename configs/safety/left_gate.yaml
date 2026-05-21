@@ -31,11 +31,16 @@ miss_gate:
   # `goal_position` enables "reached goal without transit" + "stuck" detection.
   # In the same frame as `corners_frame` (mocap here).
   goal_position: [1.50, 0.70, 1.50]
-  goal_tolerance_m: 1.50            # loose post-gate hover region
-  # 10 cm was too strict — the policy reliably transited the gate then
-  # hovered ~1.4 m from the configured goal point (chunk-replay artifact
-  # observed in the 20260519 campaign). 1.5 m captures any reasonable
-  # post-gate stabilization in the working volume.
+  # Box tolerance — preferred when set; sphere `goal_tolerance_m` below is
+  # the legacy fallback (still used by the no-progress mode (b)/(d)).
+  # Box dims chosen to require the drone to fly back from the gate's far
+  # side to the goal area, not just clear the aperture: 0.6 m in x/y
+  # (drone + generous footprint margin), 1.0 m in z (hover-height tol).
+  goal_tolerance_half_extents: [0.3, 0.3, 0.5]
+  goal_tolerance_m: 1.50            # legacy sphere — unused when box is set
+  # The old 1.5 m sphere was too loose — let the drone stop just past the
+  # gate and called it SUCCESS. The new box is stricter; see
+  # configs/safety/center_gate.yaml for the rationale.
   # Stuck check: drone must reduce distance to the goal by at least
   # min_progress_m within min_progress_window_s seconds. In eval_stop_mode
   # this is a stop signal; post-hoc reclassifies based on whether the

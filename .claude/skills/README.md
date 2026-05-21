@@ -19,7 +19,7 @@ in `.claude/skills/`. The skills speak a single canonical type
  │  trajectory-from-vla        │         │  export-parquet     │  ──►  one
  │  trajectory-from-replay     │         │  (renders + emits   │      LeRobot-
  │  trajectory-from-mock       │         │   training parquet) │      style
- │  trajectory-from-mpc   STUB │         └─────────┬───────────┘      parquet
+ │  trajectory-from-mpc        │         └─────────┬───────────┘      parquet
  │  trajectory-from-splatnav S │                   │
  │  falsify-trajectory    STUB │                   ▼
  │  (post-hoc perturb)         │         ┌─────────────────────┐
@@ -40,7 +40,7 @@ in `.claude/skills/`. The skills speak a single canonical type
 | Run the VLA against a scene, save a trajectory | `falsify-trajectory-from-vla` | done |
 | Re-derive the trajectory of a previous VLA run (no re-inference) | `falsify-trajectory-from-replay` | done |
 | Author a straight line / helix / scripted trajectory (one-off Python) | `falsify-trajectory-from-mock` | done |
-| Plan a feasible trajectory via FiGS-MPC (same Course YAML; just the backend is pending) | `falsify-trajectory-from-mpc` | **stub** |
+| Plan a dynamically-feasible trajectory via FiGS-MPC (same Course YAML; `--planner mpc`) — also the engine behind `CoursedMpcPlanner` recoveries | `falsify-trajectory-from-mpc` | done |
 | Plan a collision-free trajectory via SplatNav | `falsify-trajectory-from-splatnav` | **stub** |
 | Inject perturbations / failures on an existing trajectory | `falsify-falsify-trajectory` | **stub** |
 | Turn a trajectory + scene into one training parquet | `falsify-export-parquet` | done |

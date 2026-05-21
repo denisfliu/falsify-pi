@@ -1,0 +1,41 @@
+# Pi inference-client gateway — pi07 NONHISTORY mode, "real + center" variant
+# (gemma3_vla_with_states + NONHISTORY_LC) finetuned on the dronevla v7
+# gate-scenes data including both the real-center and synthetic-center
+# datasets (vs. the sister `nonhistory_ccvhs1do_20k.yaml` which serves the
+# center-only checkpoint).
+#
+# Served by the moraband pi_local_bridge at model id `v7-nh-real-center`.
+
+type: pi_gateway
+
+gateway_url: "ws://moraband.stanford.edu:8766/v1/models/v7-nh-real-center"
+api_key:     "${env:PI_API_KEY}"
+
+execute_chunk_size: 25
+prompt: "fly through the gate"
+
+hz: 30
+state_dim: 7
+action_dim: 7
+action_pos_slice: [0, 3]
+action_yaw_index: 3
+
+camera_map:
+  forward:  "observation/rgb/image"
+  downward: "observation/wrist_image/rgb/image"
+
+# See sister `nonhistory_ccvhs1do_20k.yaml` for why these are required
+# for the v7 gate-scenes finetunes.
+image_size: 256
+channel_order: "BGR"
+
+server_frame: "mocap"
+
+traceability:
+  variant: "pi07_nonhistory_real_center"
+  wandb_run: "TBD"
+  step: "TBD"
+  checkpoint_uri: "TBD"
+  processor_name: "dronevla_v7_gate_scenes"
+  base_model: "gemma3_vla_with_states + NONHISTORY_LC"
+  notes: "Sibling of ccvhs1do; trained with real-center data included. Fill traceability after run is identified."

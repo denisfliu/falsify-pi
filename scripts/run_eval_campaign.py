@@ -160,6 +160,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "querying the VLA once per chunk instead of once "
                          "per step. NOT byte-identical to a checkpoint "
                          "deployed under sample_actions_fixed_noise.")
+    ap.add_argument("--execute-chunk-size", type=int, default=None,
+                    help="Override the policy YAML's execute_chunk_size. "
+                         "Set to 1 for MPC-style receding-horizon: query the "
+                         "VLA every step, take the first action, re-observe. "
+                         "Only takes effect when --no-rtc is also set (with "
+                         "RTC, chunk is always 1).")
     ap.add_argument("--gif-trials-per-scene", type=int, default=0,
                     help="For the first N trials of each scene, render a "
                          "forward-camera GIF (`flythrough_forward.gif`) "
@@ -282,7 +288,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             pgcfg = PiGatewayConfig(
                 gateway_url=policy_cfg_yaml["gateway_url"],
                 api_key=policy_cfg_yaml.get("api_key", ""),
-                execute_chunk_size=int(policy_cfg_yaml.get("execute_chunk_size", 25)),
+                execute_chunk_size=int(
+                    args.execute_chunk_size
+                    if args.execute_chunk_size is not None
+                    else policy_cfg_yaml.get("execute_chunk_size", 25)
+                ),
                 prompt=card.prompt,
                 hz=int(policy_cfg_yaml.get("hz", 30)),
                 state_dim=int(policy_cfg_yaml.get("state_dim", 7)),
@@ -294,6 +304,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 server_frame=policy_cfg_yaml.get("server_frame", "mocap"),
                 use_rtc=(False if args.no_rtc
                          else bool(policy_cfg_yaml.get("use_rtc", False))),
+                image_size=policy_cfg_yaml.get("image_size"),
+                channel_order=str(policy_cfg_yaml.get("channel_order", "RGB")),
                 traceability=dict(policy_cfg_yaml.get("traceability") or {}),
                 record_dir=record_dir,
             )
@@ -508,6 +520,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 fg.convert(traj, to="mocap").positions, dtype=np.float64,
             )
             horizon_steps = int(round(args.horizon_s * effective_hz))
+            # Directional gate-transit enforcement: trial cards carrying
+            # an explicit `*_from_left` / `*_from_right` scene_key
+            # constrain the expected crossing direction through the gate
+            # aperture. from_left ⇒ correct crossing is in -y (mocap);
+            # from_right ⇒ +y. Any wrong-direction aperture crossing
+            # demotes the outcome to MISS_GATE in posthoc. Other
+            # scene_keys leave this unset and use the legacy
+            # "any-AABB-touch counts" rule.
+            expected_dy_sign = None
+            if card.scene_key.endswith("_from_left"):
+                expected_dy_sign = -1
+            elif card.scene_key.endswith("_from_right"):
+                expected_dy_sign = +1
             posthoc = classify_trajectory_posthoc(
                 positions_mocap=positions_mocap,
                 scene_cfg=scene_cfg,
@@ -518,12 +543,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                 horizon_steps=horizon_steps,
                 n_states=len(episode.trace.states),
                 gate_deltas_mocap=(episode.metadata or {}).get("gate_deltas"),
+                expected_dy_sign=expected_dy_sign,
             )
             summary["posthoc_outcome"]    = posthoc["outcome"]
             summary["transited"]          = posthoc["transited"]
             summary["transit_first_step"] = posthoc["first_inside_step"]
             summary["transit_last_step"]  = posthoc["last_inside_step"]
             summary["gate_aabb_mocap"]    = posthoc["aabb_mocap"]
+            if expected_dy_sign is not None:
+                summary["expected_dy_sign"]   = expected_dy_sign
+                summary["correct_crossings"]  = posthoc.get("correct_crossings")
+                summary["wrong_crossings"]    = posthoc.get("wrong_crossings")
+                summary["gate_plane_y_mocap"] = posthoc.get("gate_plane_y_mocap")
             # Compositional phase ({pre_gate_1, between_gates,
             # post_gate_2}) — three sources, in priority order:
             #   1. OrderedMissGateCriterion stamps `phase` onto its

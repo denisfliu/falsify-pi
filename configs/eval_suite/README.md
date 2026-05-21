@@ -145,6 +145,34 @@ When `scene_key_override` is set, the per-trial seed hashes
 entries against the same scene file but different `scene_key_override`s
 draw **independent** start jitter, not identical jitter under two prompts.
 
+## Current scoring rules (cross-cutting — apply to every scenario)
+
+1. **Goal-tolerance region**: `safety.miss_gate.goal_tolerance_half_extents`
+   (axis-aligned box in MOCAP) takes precedence over `goal_tolerance_m`
+   (sphere). The gate-scenes safety YAMLs ship a `0.6 × 0.6 × 1.0 m`
+   box around the goal; the sphere is left as a legacy fallback.
+2. **Directional gate transit**: scene_keys ending in `_from_left` /
+   `_from_right` enforce a signed crossing of the gate's mid-y plane
+   inside the aperture. A SUCCESS posthoc requires (gate-AABB transit)
+   ∧ (within goal box) ∧ (≥1 correct-direction aperture crossing) ∧
+   (zero wrong-direction aperture crossings). Other scene_keys skip
+   the directional check.
+3. **VLA image preprocess (v7 finetunes only)**: every
+   `configs/policies/pi_gateway/*.yaml` for the v7 gate-scenes
+   finetunes must set `image_size: 256` and `channel_order: "BGR"` —
+   these mirror the training-data preprocess in
+   `src/falsify/training/exporter.py`. Without them the policy sees
+   color-swapped pixels at a different aspect ratio than at training
+   time.
+
+To re-apply rules (1) and (2) to a campaign whose rollouts were
+captured under older rules, run `scripts/reclassify_campaign.py
+--campaign runs/eval_campaigns/<name>`. It updates per-trial
+`episode_summary.json` and `campaign_summary.json` in place (with
+`*.json.bak` backups on first run). Rule (3) cannot be applied
+post-hoc — it changes what the policy sees, so it requires
+re-rolling.
+
 ## Determinism contract
 
 - The trial-card seed is `hash((master_seed, scenario_name, scene_key, trial_index)) mod 2**32`.

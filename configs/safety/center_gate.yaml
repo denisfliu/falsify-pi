@@ -43,6 +43,15 @@ miss_gate:
   margin_m: 0.0
   # See configs/safety/left_gate.yaml for the meaning of these fields.
   goal_position: [1.525, -0.615, 1.0]
+  # Box tolerance (preferred when set): drone must lie inside the
+  # axis-aligned box `goal_position ± half_extents` (mocap) for
+  # GOAL_REACHED to fire. Box dims require the drone to fly back from
+  # the gate's far side to the stuffed animal area, not just clear the
+  # aperture — 0.6 m in x/y (drone + a generous footprint margin) and
+  # 1.0 m in z (tolerant of hover-height variation).
+  goal_tolerance_half_extents: [0.3, 0.3, 0.5]
+  # Sphere fallback — only used if `goal_tolerance_half_extents` is unset.
+  # Kept for the legacy mode-(b)/(d) no-progress paths.
   goal_tolerance_m: 1.50            # see configs/safety/left_gate.yaml
   min_progress_window_s: 4.0
   min_progress_m: 0.05

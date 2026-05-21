@@ -96,7 +96,7 @@ LeRobot's combine helpers.
 | Live VLA | `falsify-trajectory-from-vla` | done |
 | Waypoint course (spline) | `falsify-trajectory-from-waypoints` | done |
 | Mock / hand-authored | `falsify-trajectory-from-mock` | done |
-| FiGS-MPC plan | `falsify-trajectory-from-mpc` | stub |
+| FiGS-MPC plan (dynamically-feasible) | `falsify-trajectory-from-mpc` | done |
 | SplatNav plan | `falsify-trajectory-from-splatnav` | stub |
 | Falsified variant | `falsify-falsify-trajectory` | stub |
 

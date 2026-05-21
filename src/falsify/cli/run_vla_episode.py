@@ -355,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
             state_key=policy_cfg.get("state_key", "observation/state"),
             server_frame=policy_cfg.get("server_frame", "mocap"),
             use_rtc=bool(policy_cfg.get("use_rtc", False)),
+            image_size=policy_cfg.get("image_size"),
+            channel_order=str(policy_cfg.get("channel_order", "RGB")),
             traceability=dict(policy_cfg.get("traceability") or {}),
             record_dir=record_dir,
         )
