@@ -1,0 +1,82 @@
+# Test bridge config — the two checkpoints downloaded on this dev box.
+# Used to exercise the multi-policy registry, the 409 reject path, and the
+# admin swap.
+
+listen:
+  host: 127.0.0.1
+  port: 8765
+
+auth:
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+_v7_nonhistory: &v7_nonhistory
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_fixed_noise
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+_v7_history: &v7_history
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_with_prefix
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  sequence_length: 6
+  sequence_length_stride: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+_spec_overrides: &spec_overrides
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear
+
+default_policy: v7-history
+
+policies:
+
+  v7-history:
+    <<: *v7_history
+    ws_path: /v1/models/v7-history
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/h6jtbq0w/20000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/ccvhs1do/20000/model_bfloat16
+    spec_overrides: *spec_overrides

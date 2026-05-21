@@ -51,6 +51,17 @@ in `.claude/skills/`. The skills speak a single canonical type
 | Gray renders, wrong-direction camera, missing gaussians, JIT failure | `falsify-debug-render` | done |
 | Tune `scene_edits` AABBs interactively (find stranded / uncaught Gaussians) | `falsify-author-gaussian-mask` | done |
 
+### VLA infrastructure (`pi_local_bridge` + `PiGatewayPolicy`)
+
+These two skills cover the server + client of the pi-inference-client
+gateway protocol. Use them when bringing up a new checkpoint, swapping
+between v7 finetunes, or wiring a falsify-side YAML at a bridge.
+
+| You want to … | Skill | Status |
+|---|---|---|
+| Host one or more v7 checkpoints behind one bridge process; add / swap / verify policies | `falsify-host-checkpoint` | done |
+| Connect to a running bridge (or Pi-hosted gateway) and run inference from the falsify side | `falsify-infer-from-checkpoint` | done |
+
 **Stub** = the skill describes the intended interface but the underlying
 code isn't there yet. The body of each stub points to the TODO list.
 

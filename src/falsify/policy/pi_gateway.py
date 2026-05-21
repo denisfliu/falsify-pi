@@ -137,6 +137,18 @@ class PiGatewayConfig:
     # --- Frame ---
     server_frame: str = "mocap"
 
+    # --- Bridge admin handshake (pi_local_bridge multi-policy hosting) ---
+    # When `bridge_admin_url` is set, the policy adapter GETs
+    # /admin/switch_policy?policy_id=<bridge_policy_id> on the bridge
+    # before opening the WS connection. This is the *explicit* assertion
+    # that the bridge is serving the checkpoint this YAML describes — if
+    # the bridge can't switch, the run aborts. Both fields must be set
+    # together; leave both unset for Pi-hosted gateway URLs where there
+    # is no admin endpoint to talk to.
+    bridge_admin_url: Optional[str] = None
+    bridge_policy_id: Optional[str] = None
+    bridge_switch_timeout: float = 360.0    # JAX cold load is ~30-60s
+
     # --- Optional RTC (deferred; off by default) ---
     use_rtc: bool = False
 
@@ -187,6 +199,11 @@ class PiGatewayPolicy(Policy):
         self._connected = False
         self._query_count = 0
         self._step_count = 0
+        # Populated by `_bridge_admin_handshake` on first connect when
+        # `bridge_admin_url` is set. CLIs persist this into
+        # policy_manifest.json so a reviewer can prove which bridge
+        # checkpoint produced the run.
+        self.bridge_manifest: Optional[dict[str, Any]] = None
 
     @property
     def required_modalities(self) -> frozenset[str]:
@@ -198,9 +215,78 @@ class PiGatewayPolicy(Policy):
 
     # ---- handshake ----------------------------------------------------
 
+    def _bridge_admin_handshake(self) -> None:
+        """Ensure the bridge is serving `bridge_policy_id` before we connect.
+
+        GETs /admin/switch_policy?policy_id=<id>. The bridge no-ops if
+        the policy is already active. Non-2xx ⇒ raise so the run aborts
+        before any inference happens.
+        """
+        import json as _json
+        import urllib.error as _ue
+        import urllib.parse as _up
+        import urllib.request as _ur
+        if not self.cfg.bridge_admin_url or not self.cfg.bridge_policy_id:
+            return
+        if self.cfg.bridge_admin_url and not self.cfg.bridge_policy_id:
+            raise ValueError(
+                "PiGatewayPolicy: bridge_admin_url is set but bridge_policy_id "
+                "is empty — set both or neither"
+            )
+        api_key = _expand_env(self.cfg.api_key) or ""
+        qs = _up.urlencode({"policy_id": self.cfg.bridge_policy_id})
+        url = self.cfg.bridge_admin_url.rstrip("/") + "/admin/switch_policy?" + qs
+        # GET (not POST) — the `websockets` sync server's HTTP parser
+        # rejects non-GET requests before our process_request hook runs.
+        # Idempotent + internal-only, so GET is fine here.
+        req = _ur.Request(url, method="GET")
+        req.add_header("Authorization", f"Api-Key {api_key}")
+        t0 = time.time()
+        try:
+            with _ur.urlopen(req, timeout=self.cfg.bridge_switch_timeout) as resp:
+                body = resp.read()
+                status = resp.status
+        except _ue.HTTPError as exc:
+            body_txt = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"PiGatewayPolicy: bridge swap to {self.cfg.bridge_policy_id!r} "
+                f"failed (HTTP {exc.code}): {body_txt.strip()}"
+            ) from exc
+        except _ue.URLError as exc:
+            raise RuntimeError(
+                f"PiGatewayPolicy: cannot reach bridge admin "
+                f"{self.cfg.bridge_admin_url!r}: {exc}"
+            ) from exc
+        elapsed = time.time() - t0
+        try:
+            parsed = _json.loads(body)
+        except _json.JSONDecodeError:
+            raise RuntimeError(
+                f"PiGatewayPolicy: bridge swap returned non-JSON body "
+                f"(HTTP {status}): {body!r}"
+            )
+        active = parsed.get("active_policy_id")
+        if active != self.cfg.bridge_policy_id:
+            raise RuntimeError(
+                f"PiGatewayPolicy: bridge swap returned active={active!r}, "
+                f"expected {self.cfg.bridge_policy_id!r}"
+            )
+        self.bridge_manifest = {
+            "bridge_admin_url": self.cfg.bridge_admin_url,
+            "bridge_policy_id": self.cfg.bridge_policy_id,
+            "switch_took_s": elapsed,
+            "active_policy_id": active,
+            "active_loaded_at": parsed.get("active_loaded_at"),
+        }
+        print(
+            f"[pi_gateway] bridge active={active} "
+            f"(switch took {elapsed:.1f}s)"
+        )
+
     def _ensure_connected(self) -> None:
         if self._connected:
             return
+        self._bridge_admin_handshake()
         from pi_inference_client import ClientConfig, PolicyClient  # noqa: WPS433
         cc = ClientConfig(
             gateway_url=_expand_env(self.cfg.gateway_url),

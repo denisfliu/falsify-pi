@@ -4,8 +4,14 @@
 
 type: pi_gateway
 
-gateway_url: "ws://moraband.stanford.edu:8766/v1/models/v7-nh-center"
+gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v7-nonhistory"
 api_key:     "${env:PI_API_KEY}"
+
+# Multi-policy bridge handshake — see history_h6jtbq0w_20k.yaml for the
+# contract. `bridge_policy_id` must match the registry entry on the
+# bridge YAML.
+bridge_admin_url: "http://moraband.stanford.edu:8765"
+bridge_policy_id: "v7-nonhistory"
 
 execute_chunk_size: 25
 prompt: "fly through the gate"

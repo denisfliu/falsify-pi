@@ -22,6 +22,15 @@ type: pi_gateway
 gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v7-history"
 api_key:     "${env:PI_API_KEY}"
 
+# Multi-policy bridge handshake. `PiGatewayPolicy._ensure_connected` posts
+# `policy_id=v7-history` to /admin/switch_policy at the bridge BEFORE
+# opening the WS. The bridge no-ops if already active, swaps otherwise.
+# Non-2xx ⇒ run aborts — the policy YAML is the single source of truth
+# for which checkpoint a run uses. Leave both unset for Pi-hosted
+# (api.pi-fleet.com) gateway URLs that have no admin endpoint.
+bridge_admin_url: "http://moraband.stanford.edu:8765"
+bridge_policy_id: "v7-history"
+
 execute_chunk_size: 25
 prompt: "fly through the gate"
 

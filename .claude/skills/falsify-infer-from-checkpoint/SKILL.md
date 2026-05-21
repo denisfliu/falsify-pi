@@ -38,32 +38,74 @@ the legacy [`falsify-trajectory-from-vla`](../falsify-trajectory-from-vla/SKILL.
 ## YAML organization
 
 Each deployed checkpoint gets one falsify-side YAML under
-`configs/policies/pi_gateway/`. The two shipped variants:
+`configs/policies/pi_gateway/`. The six shipped variants (all on the
+moraband multi-policy bridge, port 8765):
 
-| File | Variant | Default gateway URL |
+| File | bridge_policy_id | Variant |
 |---|---|---|
-| `history_h6jtbq0w_20k.yaml` | pi07 history (best MSE) | `ws://moraband:8765/v1/models/v7-history` |
-| `nonhistory_ccvhs1do_20k.yaml` | pi07 nonhistory | `ws://moraband:8766/v1/models/v7-nonhistory` |
+| `history_h6jtbq0w_20k.yaml` | `v7-history` | pi07 history (best MSE) |
+| `nonhistory_ccvhs1do_20k.yaml` | `v7-nonhistory` | pi07 nonhistory base |
+| `nonhistory_all_93sufwik_7500.yaml` | `v7-nonhistory-all` | may19 — gate-scenes-all union |
+| `nonhistory_real_center.yaml` | `v7-nonhistory-real-center` | may19 — real-center only |
+| `nonhistory_center_g3jt73md_3000.yaml` | `v7-nonhistory-center` | may19 — synthetic center only |
+| `nonhistory_real_synth_31ohxgxv_5000.yaml` | `v7-nonhistory-real-synth` | may19 — real + synth mix |
 
-Both reference `${env:PI_API_KEY}` so the key never lands in git. Source
+All reference `${env:PI_API_KEY}` so the key never lands in git. Source
 `tools/pi_inference_env.sh` (or just `export PI_API_KEY=…`) before any
 falsify CLI that loads the YAML.
 
-To target a **locally-running bridge** on this machine, copy one of
-the YAMLs (or override the field at load time):
+### Bridge admin handshake (mandatory for multi-policy bridges)
+
+When the bridge hosts more than one policy, the falsify-side YAML must
+name **both** the ws_path and the admin endpoint so the policy can swap
+the bridge to the requested checkpoint before opening the WS:
 
 ```yaml
-gateway_url: "ws://127.0.0.1:8765/v1/models/v7-history"
-api_key:     "${env:PI_API_KEY}"
+gateway_url:       "ws://moraband.stanford.edu:8765/v1/models/v7-history"
+api_key:           "${env:PI_API_KEY}"
+bridge_admin_url:  "http://moraband.stanford.edu:8765"   # same host, http://
+bridge_policy_id:  "v7-history"                          # registry entry id
 ```
 
-To target **Pi-hosted** once Pi deploys the checkpoint:
+On `_ensure_connected`, `PiGatewayPolicy` does:
+
+1. GET `{bridge_admin_url}/admin/switch_policy?policy_id={bridge_policy_id}`
+   with the same `Authorization: Api-Key {api_key}` header.
+2. Wait for the bridge's `200 OK` response (`active_policy_id` echoed
+   back). The bridge no-ops if the policy is already active.
+3. Open the WS to `gateway_url`. Without the handshake, a non-active
+   `ws_path` returns **HTTP 409** and the run aborts.
+
+The handshake is **how we guarantee a falsify run can never consume the
+wrong checkpoint** — the YAML, not bridge state, is the source of
+truth for "which policy this run uses." Audit line printed:
+
+```
+[pi_gateway] bridge active=v7-history (switch took 6.4s)
+```
+
+(`0.0s` ⇒ already active, no-op.) The CLIs (`run_vla_episode`,
+`scripts/run_eval_campaign.py`) also write a `policy_manifest.json`
+next to each run capturing the YAML sha256 + bridge response.
+
+### Targeting other topologies
+
+To target a **locally-running bridge** on this machine, copy one of the
+YAMLs and rewrite the host portion of both URLs:
+
+```yaml
+gateway_url:      "ws://127.0.0.1:8765/v1/models/v7-history"
+bridge_admin_url: "http://127.0.0.1:8765"
+```
+
+To target **Pi-hosted** once Pi deploys the checkpoint, omit the bridge
+fields entirely — Pi's gateway has no admin endpoint and the handshake
+is skipped:
 
 ```yaml
 gateway_url: "wss://api.pi-fleet.com/v1/models/<id-pi-gives-you>"
+# bridge_admin_url / bridge_policy_id intentionally absent
 ```
-
-No other field changes; the entire wire protocol is gateway-URL-agnostic.
 
 ## Procedure — sanity check (no scene needed)
 
@@ -177,8 +219,10 @@ All of these live in `configs/policies/pi_gateway/<variant>.yaml`:
 
 | Field | Purpose |
 |---|---|
-| `gateway_url` | The only thing that changes when switching Pi-hosted ↔ self-hosted ↔ a different checkpoint URL. |
+| `gateway_url` | The WS URL of a registered ws_path on the bridge (or a Pi-hosted URL). |
 | `api_key` | `${env:PI_API_KEY}`; never bake the key into git. |
+| `bridge_admin_url` | Multi-policy bridges only. The HTTP base URL the policy calls before opening the WS. Omit for Pi-hosted. |
+| `bridge_policy_id` | Multi-policy bridges only. The registry id the YAML asserts the bridge must serve. Mismatched / unknown id ⇒ run aborts. |
 | `execute_chunk_size` | Actions delivered per request; `run_vla_episode`'s `--actions-per-chunk` is ignored in favor of this. |
 | `prompt` | Task instruction; the CLI's `--prompt` is still passed but the YAML wins when both are set. |
 | `hz` | Control rate; `run_vla_episode --hz` is ignored. v7 = 30. |
@@ -195,6 +239,16 @@ All of these live in `configs/policies/pi_gateway/<variant>.yaml`:
 - **`ServerConnectionError: Not connected` / `401 Unauthorized`** —
   `$PI_API_KEY` not in the gateway's allow-list. For self-hosted,
   echo `$PI_BRIDGE_API_KEYS` on the server host.
+- **`RuntimeError: bridge swap to '<id>' failed (HTTP 409 / 404)`** —
+  multi-policy bridge handshake failed. 404 ⇒ `bridge_policy_id`
+  doesn't match any registry entry (check `pi_local_bridge.switch
+  --list`). 409 shouldn't happen post-handshake; if it does, two
+  competing PiGatewayPolicy instances are racing on the same bridge —
+  serialize the campaign or split bridge ports.
+- **`RuntimeError: cannot reach bridge admin <url>`** —
+  `bridge_admin_url` host/port is wrong, the bridge process is down,
+  or a firewall is blocking. Curl `<url>/admin/policies` with the
+  Api-Key header to confirm.
 - **`gateway_url does not use wss://`** — info-only warning from
   `pi_inference_client.PolicyClient.connect()`. Plain `ws://` is fine
   on a trusted in-network bridge.

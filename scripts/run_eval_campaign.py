@@ -228,14 +228,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     from falsify.sim.poses import camera_to_world_pose
     from falsify.sim.renderer import GSplatRenderer
 
-    policy_cfg_yaml = load_yaml(_resolve(args.policy_config))
+    import hashlib
+    policy_cfg_path_resolved = _resolve(args.policy_config)
+    policy_cfg_yaml = load_yaml(policy_cfg_path_resolved)
     if policy_cfg_yaml.get("type") != "pi_gateway":
         raise SystemExit("only pi_gateway policy configs are supported by "
                          "run_eval_campaign.py (see run_vla_episode.py for the "
                          "openpi path).")
+    policy_cfg_sha = hashlib.sha256(policy_cfg_path_resolved.read_bytes()).hexdigest()
+    print(
+        f"[campaign] policy: {policy_cfg_path_resolved.name} "
+        f"sha256={policy_cfg_sha[:12]} "
+        f"bridge_policy_id={policy_cfg_yaml.get('bridge_policy_id') or '(none)'} "
+        f"bridge_admin_url={policy_cfg_yaml.get('bridge_admin_url') or '(none)'}"
+    )
     frame_cfg = load_yaml(_resolve(args.frame))
 
     args.out.mkdir(parents=True, exist_ok=True)
+    # Campaign-level policy manifest — one per campaign, since every trial
+    # uses the same policy YAML. Per-trial drift would be a bug, so we
+    # don't write one per trial.
+    (args.out / "policy_manifest.json").write_text(json.dumps({
+        "policy_config_path": str(policy_cfg_path_resolved),
+        "policy_config_sha256": policy_cfg_sha,
+        "bridge_admin_url": policy_cfg_yaml.get("bridge_admin_url"),
+        "bridge_policy_id": policy_cfg_yaml.get("bridge_policy_id"),
+        "traceability": policy_cfg_yaml.get("traceability") or {},
+    }, indent=2))
 
     # ---- Group trials by scene so we build each renderer once ----------
     by_scene_key: dict[str, list[TrialCard]] = {}
@@ -302,6 +321,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 camera_map=dict(policy_cfg_yaml.get("camera_map") or {}),
                 state_key=policy_cfg_yaml.get("state_key", "observation/state"),
                 server_frame=policy_cfg_yaml.get("server_frame", "mocap"),
+                bridge_admin_url=policy_cfg_yaml.get("bridge_admin_url"),
+                bridge_policy_id=policy_cfg_yaml.get("bridge_policy_id"),
                 use_rtc=(False if args.no_rtc
                          else bool(policy_cfg_yaml.get("use_rtc", False))),
                 image_size=policy_cfg_yaml.get("image_size"),

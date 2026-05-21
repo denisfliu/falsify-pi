@@ -1,0 +1,162 @@
+# Multi-policy bridge config — moraband edition.
+#
+# Hosts every downloaded dronevla v7 gate-scenes finetune behind one bridge.
+# Only one is GPU-resident at a time (`default_policy:` decides which loads
+# at startup). Switching is **explicit**:
+#
+#   curl -X POST -H "Authorization: Api-Key $PI_BRIDGE_API_KEYS" \
+#        "http://moraband.stanford.edu:8765/admin/switch_policy?policy_id=v7-nonhistory-center"
+#
+# Or via the bundled CLI:
+#
+#   python -m pi_local_bridge.switch --admin-url http://moraband.stanford.edu:8765 \
+#       --api-key-env PI_BRIDGE_API_KEYS --policy-id v7-nonhistory-center
+#
+# Falsify-side runs always supply `--policy-config configs/policies/pi_gateway/<x>.yaml`,
+# whose `bridge_admin_url` + `bridge_policy_id` cause `PiGatewayPolicy` to
+# call /admin/switch_policy before opening the WS. Connecting to a ws_path
+# whose policy isn't active returns HTTP 409 — there is no implicit swap.
+#
+# Run on moraband:
+#   export PI_BRIDGE_API_KEYS="pi-jt-moraband-dev-001"
+#   python -m pi_local_bridge --config configs/moraband_v7_all.example.yaml
+#
+# gsutil source for each checkpoint (run on the host before starting bridge):
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may17/mar16_history_ft_dronevla_v7_gate_scenes_may16_311am/h6jtbq0w/20000 \
+#     /scratch/checkpoints/dronevla_v7/h6jtbq0w/
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may17/mar16_nonhistory_ft_dronevla_v7_gate_scenes_may16_311am/ccvhs1do/20000 \
+#     /scratch/checkpoints/dronevla_v7/ccvhs1do/
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may19/mar16_nonhistory_ft_dronevla_v7_gate_scenes_all_gpu_may19_140am/93sufwik/7500 \
+#     /scratch/checkpoints/dronevla_v7/93sufwik/
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may19/mar16_nonhistory_ft_dronevla_v7_gate_scenes_real_center_gpu_may19_140am/5b9p2kw1/5000 \
+#     /scratch/checkpoints/dronevla_v7/5b9p2kw1/
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may19/mar16_nonhistory_ft_dronevla_v7_gate_scenes_center_gpu_may19_140am/g3jt73md/3000 \
+#     /scratch/checkpoints/dronevla_v7/g3jt73md/
+#   gsutil -m cp -r \
+#     gs://dronevla-raw-data/model_checkpoints/2026_may19/mar16_nonhistory_ft_dronevla_v7_gate_scenes_real_synth_gpu_may19_140am/31ohxgxv/5000 \
+#     /scratch/checkpoints/dronevla_v7/31ohxgxv/
+
+listen:
+  host: 0.0.0.0
+  port: 8765
+
+auth:
+  # Comma-separated allow-list (same env var used by the legacy single-policy
+  # bridge). Reused for both WS auth and admin HTTP auth.
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+# ---------------------------------------------------------------------------
+# Shared snippets — most v7 finetunes share the same processor / wire layout.
+# YAML anchors keep the per-policy blocks short.
+# ---------------------------------------------------------------------------
+
+# v7 nonhistory finetunes (gemma3_vla + LC). 7-D state, 50-step action horizon,
+# 25-step executed chunk. Sample with fixed noise (no RTC).
+_v7_nonhistory: &v7_nonhistory
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_fixed_noise
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+# v7 history finetune. Same processor, but sequence_length=6 stacked frames
+# accumulated in policy._history; inference function exports `prefix` so the
+# falsify side can opt into RTC.
+_v7_history: &v7_history
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_with_prefix
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  sequence_length: 6
+  sequence_length_stride: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+_spec_overrides: &spec_overrides
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear
+
+# ---------------------------------------------------------------------------
+# Policy registry. Each `policies.<id>:` entry inherits a base snippet,
+# overrides `ckpt_path`, and binds a unique `ws_path`.
+# ---------------------------------------------------------------------------
+
+default_policy: v7-history
+
+policies:
+
+  v7-history:
+    <<: *v7_history
+    ws_path: /v1/models/v7-history
+    ckpt_path: /scratch/checkpoints/dronevla_v7/h6jtbq0w/20000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory
+    ckpt_path: /scratch/checkpoints/dronevla_v7/ccvhs1do/20000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-all:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-all
+    ckpt_path: /scratch/checkpoints/dronevla_v7/93sufwik/7500/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-real-center:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-real-center
+    ckpt_path: /scratch/checkpoints/dronevla_v7/5b9p2kw1/5000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-center:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-center
+    ckpt_path: /scratch/checkpoints/dronevla_v7/g3jt73md/3000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-real-synth:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-real-synth
+    ckpt_path: /scratch/checkpoints/dronevla_v7/31ohxgxv/5000/model_bfloat16
+    spec_overrides: *spec_overrides

@@ -17,7 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-pi-local-bridge = "pi_local_bridge.__main__:main"
+pi-local-bridge        = "pi_local_bridge.__main__:main"
+pi-local-bridge-switch = "pi_local_bridge.switch:main"
 
 [tool.setuptools.packages.find]
 include = ["pi_local_bridge*"]

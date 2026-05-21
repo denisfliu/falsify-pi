@@ -1,15 +1,16 @@
-# Pi inference-client gateway — pi07 NONHISTORY mode, "real + center" variant
-# (gemma3_vla_with_states + NONHISTORY_LC) finetuned on the dronevla v7
-# gate-scenes data including both the real-center and synthetic-center
-# datasets (vs. the sister `nonhistory_ccvhs1do_20k.yaml` which serves the
-# center-only checkpoint).
-#
-# Served by the moraband pi_local_bridge at model id `v7-nh-real-center`.
+# Pi inference-client gateway — pi07 NONHISTORY mode, "real-center" finetune
+# (5b9p2kw1 / step 5000). Trained on the gate-scenes-real-center subset only.
 
 type: pi_gateway
 
-gateway_url: "ws://moraband.stanford.edu:8766/v1/models/v7-nh-real-center"
+gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v7-nonhistory-real-center"
 api_key:     "${env:PI_API_KEY}"
+
+# Multi-policy bridge handshake — see history_h6jtbq0w_20k.yaml for the
+# contract. `bridge_policy_id` must match the registry entry on the
+# bridge YAML.
+bridge_admin_url: "http://moraband.stanford.edu:8765"
+bridge_policy_id: "v7-nonhistory-real-center"
 
 execute_chunk_size: 25
 prompt: "fly through the gate"
@@ -33,9 +34,10 @@ server_frame: "mocap"
 
 traceability:
   variant: "pi07_nonhistory_real_center"
-  wandb_run: "TBD"
-  step: "TBD"
-  checkpoint_uri: "TBD"
+  wandb_run: "5b9p2kw1"
+  step: 5000
+  offline_mse: 2.3e-05
+  checkpoint_uri: "gs://dronevla-raw-data/model_checkpoints/2026_may19/mar16_nonhistory_ft_dronevla_v7_gate_scenes_real_center_gpu_may19_140am/5b9p2kw1/5000/model_bfloat16/"
   processor_name: "dronevla_v7_gate_scenes"
   base_model: "gemma3_vla_with_states + NONHISTORY_LC"
-  notes: "Sibling of ccvhs1do; trained with real-center data included. Fill traceability after run is identified."
+  notes: "may19 GPU finetune on gate-scenes-real-center only. Episodes ~199 (301 frames each)."

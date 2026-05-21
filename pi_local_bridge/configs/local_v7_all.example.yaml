@@ -1,0 +1,119 @@
+# Local-host multi-policy bridge — for hosting v7 finetunes on the falsify dev box.
+#
+# Same structure as `moraband_v7_all.example.yaml`, but binds to localhost and
+# expects checkpoints to live under `/home/dfliu/checkpoints/dronevla_v7/`
+# (mirroring the legacy `local_v7_history.yaml`). Adjust `ckpt_path:` for your
+# layout — the registry shape is identical to the moraband file.
+#
+# Bring-up:
+#   export PI_BRIDGE_API_KEYS="pi-jt-local-dev-001"
+#   python -m pi_local_bridge --config configs/local_v7_all.example.yaml
+#
+# Falsify pi_gateway YAMLs point at this bridge via:
+#   gateway_url:       "ws://127.0.0.1:8765/v1/models/v7-history"
+#   bridge_admin_url:  "http://127.0.0.1:8765"
+#   bridge_policy_id:  "v7-history"
+#   api_key:           "${env:PI_API_KEY}"   # one of PI_BRIDGE_API_KEYS
+
+listen:
+  host: 127.0.0.1
+  port: 8765
+
+auth:
+  api_keys_env: PI_BRIDGE_API_KEYS
+
+_v7_nonhistory: &v7_nonhistory
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_fixed_noise
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+_v7_history: &v7_history
+  processor_name: dronevla_v7_gate_scenes
+  backend: pi07
+  inference_function: sample_actions_with_prefix
+  initial_noise_mode: numpy_fixed_random
+  initial_noise_seed: 0
+  sampling_kwargs:
+    num_denoising_steps: 10
+    denoising_schedule_exponent: 1.0
+  action_horizon: 50
+  execute_chunk_size: 25
+  resize_with_pad: true
+  sequence_length: 6
+  sequence_length_stride: 1
+  processor_overrides:
+    text_sequence_length: 300
+    max_num_actions: 0
+  image_keys:
+    - observation/rgb/image
+    - observation/wrist_image/rgb/image
+  state_keys:
+    - observation/state
+  state_dims:
+    observation/state: 7
+  robot_task_string: ""
+
+_spec_overrides: &spec_overrides
+  image_preprocess:
+    target_resolution: [448, 448]
+    resize_mode: pad
+    interpolation: bilinear
+
+default_policy: v7-history
+
+policies:
+
+  v7-history:
+    <<: *v7_history
+    ws_path: /v1/models/v7-history
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/h6jtbq0w/20000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/ccvhs1do/20000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-all:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-all
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/93sufwik/7500/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-real-center:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-real-center
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/5b9p2kw1/5000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-center:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-center
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/g3jt73md/3000/model_bfloat16
+    spec_overrides: *spec_overrides
+
+  v7-nonhistory-real-synth:
+    <<: *v7_nonhistory
+    ws_path: /v1/models/v7-nonhistory-real-synth
+    ckpt_path: /home/dfliu/checkpoints/dronevla_v7/31ohxgxv/5000/model_bfloat16
+    spec_overrides: *spec_overrides

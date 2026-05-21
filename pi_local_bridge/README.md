@@ -75,19 +75,148 @@ python -m pi_local_bridge --config configs/v7_history.example.yaml
 First request after startup pays the JAX trace+compile cost (~30–60 s);
 subsequent calls run at the steady-state inference rate.
 
+## Multi-policy hosting
+
+The bridge can hold a **registry** of N policy entries (each with its own
+`ws_path`) and rotate which one is GPU-resident on demand. Exactly one is
+active at a time. See [`configs/moraband_v7_all.example.yaml`](configs/moraband_v7_all.example.yaml)
+for the registry shape — it bundles every downloaded dronevla v7 finetune
+behind one bridge instance on port 8765.
+
+**No implicit swap.** A client opening a WS to a registered `ws_path`
+whose policy isn't the active one is **rejected with HTTP 409**:
+
+```
+$ curl -i ws://moraband:8765/v1/models/v7-nonhistory-center
+HTTP/1.1 409 Conflict
+policy_id='v7-nonhistory-center' is registered but not active;
+current active='v7-history'. GET /admin/switch_policy?policy_id=v7-nonhistory-center to switch.
+```
+
+This guarantees a run can never accidentally consume the wrong checkpoint.
+
+**Admin endpoints** (same port as the WS server, same `Authorization: Api-Key`
+header as the WS handshake):
+
+| Method | Path                              | Purpose                                       |
+|--------|-----------------------------------|-----------------------------------------------|
+| GET    | `/admin/policies`                 | list registry + active id + per-entry ckpt_path |
+| GET    | `/admin/switch_policy?policy_id=X`| evict the current policy, load X synchronously |
+
+(GET-only because the `websockets` sync server's HTTP parser rejects
+non-GET methods before our `process_request` hook runs. Idempotent +
+internal-only, so this is fine.)
+
+Switching is synchronous and blocks while the new checkpoint loads
+(~30–60 s on first swap). All existing WS connections are closed before
+the swap so clients can't observe a torn-down policy.
+
+**Ops CLI** for one-off swaps from anywhere on the network:
+
+```bash
+# List
+python -m pi_local_bridge.switch \
+    --admin-url http://moraband.stanford.edu:8765 \
+    --api-key-env PI_BRIDGE_API_KEYS --list
+
+# Switch
+python -m pi_local_bridge.switch \
+    --admin-url http://moraband.stanford.edu:8765 \
+    --api-key-env PI_BRIDGE_API_KEYS \
+    --policy-id v7-nonhistory-center
+```
+
+**Falsify-side handshake.** `PiGatewayPolicy` calls `/admin/switch_policy`
+automatically before opening its WS when the policy YAML sets
+`bridge_admin_url` + `bridge_policy_id`. The CLI emits an audit line and
+writes a `policy_manifest.json` next to each run capturing the YAML
+sha256, the bridge URL, the bridge_policy_id, and the post-swap
+`active_policy_id` reported by the bridge — so a reviewer can prove
+which checkpoint produced any artifact without trusting filenames.
+
+### Memory caveat across swaps
+
+JAX/XLA retains some compile + buffer pools after `del policy +
+jax.clear_caches()`. After many swaps the resident set can creep up; if
+it drives OOM, restart the bridge process. This is a known limitation —
+the alternative (out-of-process per-policy workers) was deferred in v0.
+
+### Adding a new policy to the registry
+
+There is no live-add endpoint — the registry is YAML and a swap can only
+target an entry that was registered at startup. To grow it:
+
+1. **Download the checkpoint** to a stable path (the dest dir parent must
+   pre-exist or `gsutil -m cp -r` fails):
+
+   ```bash
+   mkdir -p /scratch/checkpoints/dronevla_v7/<wandb_run>
+   gsutil -m cp -r \
+     gs://dronevla-raw-data/model_checkpoints/.../<wandb_run>/<step> \
+     /scratch/checkpoints/dronevla_v7/<wandb_run>/
+   ls /scratch/checkpoints/dronevla_v7/<wandb_run>/<step>/model_bfloat16/processors/
+   # → dronevla_v7_gate_scenes/   ← matches processor_name in the registry
+   ```
+
+2. **Append an entry** to the bridge's `policies:` block (use a YAML
+   anchor — every v7 finetune shares the same processor + wire layout):
+
+   ```yaml
+   v7-nonhistory-mynew:
+     <<: *v7_nonhistory                # or *v7_history for sequence_length=6
+     ws_path: /v1/models/v7-nonhistory-mynew
+     ckpt_path: /scratch/checkpoints/dronevla_v7/<wandb_run>/<step>/model_bfloat16
+     spec_overrides: *spec_overrides
+   ```
+
+3. **Restart the bridge.** Adding entries doesn't require a `default_policy`
+   change — leave it at whichever id you typically boot active.
+
+4. **Verify** the new entry is registered without forcing a swap yet:
+
+   ```bash
+   python -m pi_local_bridge.switch \
+       --admin-url http://<host>:8765 \
+       --api-key-env PI_BRIDGE_API_KEYS --list -v
+   ```
+
+5. **Add a sibling falsify-side YAML** under
+   `configs/policies/pi_gateway/` so the CLI can pick the new policy by
+   name. Required fields are `gateway_url` (with the matching ws_path),
+   `bridge_admin_url`, `bridge_policy_id`, `api_key`, plus the v7
+   preprocess parity knobs (`image_size: 256`, `channel_order: "BGR"`)
+   and the camera_map. Copy
+   [`configs/policies/pi_gateway/nonhistory_ccvhs1do_20k.yaml`](../configs/policies/pi_gateway/nonhistory_ccvhs1do_20k.yaml)
+   as a starting point.
+
+### Backwards compatibility
+
+The legacy single-`policy:` block (used by `v7_history.example.yaml` and
+`local_v7_history.yaml`) still works — it auto-wraps into a one-entry
+registry. No migration is needed for single-checkpoint deployments.
+
 ## Connect from falsify
 
-On the falsify host, point the existing `PiGatewayPolicy` YAML at the
-bridge:
+On the falsify host, the `PiGatewayPolicy` YAML names both the WS path
+and the admin endpoint so the policy can perform the swap automatically:
 
 ```yaml
 # configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml
-gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v7-history"
-api_key:     "${env:PI_API_KEY}"   # must match one of PI_BRIDGE_API_KEYS
+gateway_url:       "ws://moraband.stanford.edu:8765/v1/models/v7-history"
+api_key:           "${env:PI_API_KEY}"   # must match one of PI_BRIDGE_API_KEYS
+
+# Bridge admin handshake — PiGatewayPolicy._ensure_connected GETs
+# /admin/switch_policy?policy_id=<bridge_policy_id> on this URL before
+# opening the WS. The same Api-Key is reused for the admin call.
+bridge_admin_url:  "http://moraband.stanford.edu:8765"
+bridge_policy_id:  "v7-history"   # must match the registry entry id
 ```
 
 Source `tools/pi_inference_env.sh` (in the falsify repo) to populate
-`$PI_API_KEY`, then run any falsify CLI that uses `PiGatewayPolicy`.
+`$PI_API_KEY`, then run any falsify CLI that uses `PiGatewayPolicy`. The
+CLI writes a `policy_manifest.json` next to each run capturing the YAML
+sha256 and the bridge handshake response so a reviewer can prove which
+checkpoint produced the artifacts.
 
 ## TLS
 

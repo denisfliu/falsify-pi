@@ -65,27 +65,31 @@
   `data/atomic_datasets/*/meta/tasks.jsonl`. Keys today:
   `center_from_left`, `center_from_right`, `left_gate`, `right_gate`,
   `real_left`, `real_right`. Refresh after adding a dataset.
-- `run_vla_episode.py` — full VLA-driven rollout against the OpenPI server.
-  Smoke-imports `openpi_client`, `figs`, `nerfstudio`, asserts CUDA, opens
-  + closes a websocket handshake, then runs one episode at `--hz` with
-  chunks of `--actions-per-chunk` waypoints. Writes three bundles under
-  `--out`: `frames/combined_<frame>.ply` (trajectory + scene clouds),
-  `flythrough.mp4` (forward-camera renders along the flown path), and
-  `vla_io/query_*` (per-query VLA inputs/outputs). Use `--skip-handshake`
-  for renderer-only smoke runs. `--perturbations PATH` wires a
-  `PerturbationSuite` covering all three surfaces — observation, action,
-  and environment (`GateRigidPerturbation` jitters the gate Gaussians
-  per-episode within YAML-configured Δxyz / Δyaw bounds, selecting
-  Gaussians via the scene's `gate_region:` block). The manifest
-  (including the sampled deltas) is persisted under
+- `run_vla_episode.py` — full VLA-driven rollout against either the
+  OpenPI server (default) or a `PiGatewayPolicy` (when
+  `--policy-config configs/policies/pi_gateway/<x>.yaml` is passed).
+  Smoke-imports `openpi_client` or `pi_inference_client` (depending on
+  backend) plus `figs`, `nerfstudio`, asserts CUDA. For the OpenPI
+  backend, opens + closes a websocket handshake; for pi_gateway, the
+  handshake runs lazily inside `PiGatewayPolicy._ensure_connected` and
+  includes a `/admin/switch_policy` call when the YAML names a bridge.
+  Runs one episode at `--hz` with chunks of `--actions-per-chunk`
+  waypoints. Writes four bundles under `--out`:
+  `frames/combined_<frame>.ply` (trajectory + scene clouds),
+  `flythrough.mp4` (forward-camera renders along the flown path),
+  `vla_io/query_*` (per-query VLA inputs/outputs), and — for
+  pi_gateway only — `policy_manifest.json` (YAML sha256, bridge URL,
+  requested + actual bridge_policy_id, full traceability block) so a
+  reviewer can verify which checkpoint produced the run. Use
+  `--skip-handshake` for renderer-only smoke runs. `--perturbations
+  PATH` wires a `PerturbationSuite` covering all three surfaces —
+  observation, action, and environment (`GateRigidPerturbation` jitters
+  the gate Gaussians per-episode within YAML-configured Δxyz / Δyaw
+  bounds, selecting Gaussians via the scene's `gate_region:` block).
+  The manifest (including the sampled deltas) is persisted under
   `episode_summary.json:perturbations` so runs are reproducible from
   YAML + `--seed`. The factory is shared with `smoke_test.py` —
-  `falsify.cli.smoke_test.build_perturbations_factory`. **Note:** this CLI currently dispatches
-  to `VLAPolicy` (openpi protocol). The newer `PiGatewayPolicy`
-  (pi-inference-client gateway, see top-level `CLAUDE.md` and
-  `pi_local_bridge/`) is not yet wired into this CLI — the policy class
-  is available but smoke_test/run_vla_episode dispatchers still need a
-  `type: pi_gateway` branch.
+  `falsify.cli.smoke_test.build_perturbations_factory`.
 - `run_falsification.py` (future) — full campaign driver.
 
 ## Running with the SousVide venv

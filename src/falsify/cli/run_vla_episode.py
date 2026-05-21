@@ -332,12 +332,20 @@ def main(argv: list[str] | None = None) -> int:
     built_policies: list = []
 
     if use_pi_gateway:
+        import hashlib
         from falsify.policy import PiGatewayConfig, PiGatewayPolicy
         policy_cfg = load_yaml(args.policy_config)
         if policy_cfg.get("type") != "pi_gateway":
             raise ValueError(
                 f"--policy-config expects type: pi_gateway, got {policy_cfg.get('type')!r}"
             )
+        policy_cfg_bytes = args.policy_config.read_bytes()
+        policy_cfg_sha = hashlib.sha256(policy_cfg_bytes).hexdigest()
+        print(
+            f"[policy] {args.policy_config.name} sha256={policy_cfg_sha[:12]} "
+            f"bridge_policy_id={policy_cfg.get('bridge_policy_id') or '(none)'} "
+            f"bridge_admin_url={policy_cfg.get('bridge_admin_url') or '(none)'}"
+        )
         pgcfg = PiGatewayConfig(
             gateway_url=policy_cfg["gateway_url"],
             api_key=policy_cfg.get("api_key", ""),
@@ -354,6 +362,8 @@ def main(argv: list[str] | None = None) -> int:
             camera_map=dict(policy_cfg.get("camera_map") or {}),
             state_key=policy_cfg.get("state_key", "observation/state"),
             server_frame=policy_cfg.get("server_frame", "mocap"),
+            bridge_admin_url=policy_cfg.get("bridge_admin_url"),
+            bridge_policy_id=policy_cfg.get("bridge_policy_id"),
             use_rtc=bool(policy_cfg.get("use_rtc", False)),
             image_size=policy_cfg.get("image_size"),
             channel_order=str(policy_cfg.get("channel_order", "RGB")),
@@ -579,6 +589,25 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
     (out_dir / "episode_summary.json").write_text(json.dumps(summary, indent=2))
+
+    # Policy manifest — independent of episode_summary, so a reviewer can
+    # answer "which checkpoint produced this run?" without parsing the
+    # whole summary. Captures the YAML sha, the bridge handshake result
+    # (if any), and the YAML's traceability block.
+    if use_pi_gateway:
+        manifest = {
+            "policy_config_path": str(args.policy_config),
+            "policy_config_sha256": policy_cfg_sha,
+            "bridge_admin_url": pgcfg.bridge_admin_url,
+            "bridge_policy_id": pgcfg.bridge_policy_id,
+            "bridge_handshake": (
+                built_policies[0].bridge_manifest
+                if built_policies and built_policies[0].bridge_manifest is not None
+                else None
+            ),
+            "traceability": pgcfg.traceability,
+        }
+        (out_dir / "policy_manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"\n[done] {out_dir / 'episode_summary.json'}")
 
     # Close the websocket — openpi_client uses a non-daemon thread that

@@ -208,6 +208,29 @@ Variant YAMLs live in `configs/policies/pi_gateway/`, one per deployed
 checkpoint; each carries a `traceability:` block (W&B run, step, GCS
 checkpoint URI, processor name) so we can reproduce later.
 
+### Multi-policy bridge
+
+The self-hosted bridge can register N checkpoints, one per `ws_path`, with
+exactly one resident in GPU memory at a time. Swapping is **explicit
+only**: a CLI run GETs `/admin/switch_policy?policy_id=X` before opening
+the WS; a connection to a non-active `ws_path` returns HTTP 409. This
+makes "which checkpoint produced this run" an unambiguous property of
+the `--policy-config` YAML passed on the CLI, not of bridge state.
+
+Each `configs/policies/pi_gateway/<x>.yaml` carries `bridge_admin_url` +
+`bridge_policy_id`; `PiGatewayPolicy._ensure_connected` performs the
+admin swap before opening the WS. Non-2xx ⇒ the run aborts. The CLIs
+(`run_vla_episode`, `scripts/run_eval_campaign.py`) write a
+`policy_manifest.json` per run capturing the YAML's sha256, the bridge
+URL, the requested `bridge_policy_id`, and the `active_policy_id` the
+bridge reported after the swap.
+
+The registry YAML lives in `pi_local_bridge/configs/` —
+`moraband_v7_all.example.yaml` for the moraband host (bundles all six v7
+finetunes), `local_v7_all.example.yaml` for self-hosting on the falsify
+dev box. The legacy single-`policy:` block still works (auto-wrapped
+into a one-entry registry).
+
 ## External submodules
 
 `external/` holds the three Stanford-MSL repos (FiGS, splatnav, Splat-MOVER)

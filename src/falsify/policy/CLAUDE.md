@@ -109,8 +109,8 @@ image_size: 256
 channel_order: "BGR"
 ```
 
-Currently set in `nonhistory_ccvhs1do_20k.yaml`,
-`nonhistory_real_center.yaml`, and `history_h6jtbq0w_20k.yaml`.
+Set in all six gate-scenes YAMLs under `configs/policies/pi_gateway/`
+(history + nonhistory base + four may19 nonhistory variants).
 
 Debug bundles record both the native render (`rgb_<cam>.png`, what the
 renderer produced) and the post-preprocess image actually sent
@@ -134,6 +134,36 @@ but it does not care **who** runs that gateway. Two supported topologies:
    provisions for a deployed checkpoint. Same client, different `gateway_url`.
 
 Switching topologies is purely a YAML edit — no code change.
+
+### Bridge admin handshake
+
+`pi_local_bridge` v0.2+ supports a **registry** of N checkpoints behind one
+bridge instance. Exactly one is GPU-resident at a time; swapping is
+explicit only — opening a WS to a non-active `ws_path` returns HTTP 409.
+
+`PiGatewayPolicy` participates in this protocol via two optional YAML
+fields:
+
+| YAML key            | Purpose                                              |
+|---------------------|------------------------------------------------------|
+| `bridge_admin_url`  | Base URL of the bridge's admin HTTP endpoint (e.g. `http://moraband.stanford.edu:8765`). |
+| `bridge_policy_id`  | Registry id this YAML asserts the bridge must serve (e.g. `v7-history`). |
+
+When both are set, `_ensure_connected` GETs
+`/admin/switch_policy?policy_id=<bridge_policy_id>` with the same
+`Authorization: Api-Key <api_key>` header used for the WS handshake.
+The bridge no-ops if already active or swaps synchronously (~30–60 s
+cold). Non-2xx ⇒ `_ensure_connected` raises and the run aborts before
+any inference.
+
+The handshake response is captured into `policy.bridge_manifest` so the
+calling CLI (`run_vla_episode`, `run_eval_campaign`) can persist it into
+`policy_manifest.json` next to the run outputs — a reviewer can prove
+that the bridge served the claimed checkpoint without trusting the run
+directory name.
+
+For Pi-hosted (`wss://api.pi-fleet.com/...`) URLs, omit both fields —
+there is no admin endpoint to call and the handshake is skipped.
 
 `VLAPolicyConfig`:
 - `host`, `port`, `prompt` — server + task.
