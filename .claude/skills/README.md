@@ -62,6 +62,12 @@ between v7 finetunes, or wiring a falsify-side YAML at a bridge.
 | Host one or more v7 checkpoints behind one bridge process; add / swap / verify policies | `falsify-host-checkpoint` | done |
 | Connect to a running bridge (or Pi-hosted gateway) and run inference from the falsify side | `falsify-infer-from-checkpoint` | done |
 
+### Evaluation
+
+| You want to … | Skill | Status |
+|---|---|---|
+| Run a reproducible per-policy eval campaign (policy-rooted output dir + auto-emitted trajectories & outcome HTMLs); re-render viz on a historical campaign | `falsify-eval-campaign` | done |
+
 **Stub** = the skill describes the intended interface but the underlying
 code isn't there yet. The body of each stub points to the TODO list.
 
