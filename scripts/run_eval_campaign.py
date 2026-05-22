@@ -8,7 +8,11 @@ identical conditions on the same trial.
 
 Per-trial outputs land under ``<out>/<scene_key>/trial_NNN/``; an
 aggregate ``campaign_summary.json`` at the top of ``<out>`` records the
-counts and policy metadata.
+counts and policy metadata. When ``--out`` is omitted (recommended) the
+script writes to
+``runs/eval_campaigns/<policy_id>/run-NNN-<scenario>-<YYYYMMDD_HHMMSS>/``
+where ``<policy_id>`` is the policy YAML stem and ``NNN`` auto-increments
+per policy.
 
 Usage:
 
@@ -16,16 +20,18 @@ Usage:
         source tools/pi_inference_env.sh; \\
         PYTHONPATH=src python scripts/run_eval_campaign.py \\
             --scenario configs/eval_suite/pure.yaml \\
-            --bundle-dir runs/eval_bundles/pure \\
             --policy-config configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml \\
-            --frame configs/frames/carl_dual.yaml \\
-            --out runs/eval_campaigns/pi07_history_pure'
+            --frame configs/frames/carl_dual.yaml'
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import subprocess
+import sys
 import time
 import traceback
 from dataclasses import dataclass
@@ -122,6 +128,85 @@ def _build_initial_state(start_ned: np.ndarray):
     )
 
 
+_RUN_DIR_RE = re.compile(r"^run-(\d+)-")
+
+
+def _next_run_number(policy_root: Path) -> int:
+    """Scan ``policy_root`` for ``run-NNN-*`` subdirs and return max+1.
+
+    Returns 1 when the dir doesn't exist or has no matching entries.
+    Non-conforming entries are ignored so the dir can hold the optional
+    ``README.md`` etc.
+    """
+    if not policy_root.is_dir():
+        return 1
+    nums = []
+    for child in policy_root.iterdir():
+        if not child.is_dir():
+            continue
+        m = _RUN_DIR_RE.match(child.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return (max(nums) + 1) if nums else 1
+
+
+def _derive_out_dir(policy_config: Path, scenario_name: str) -> Path:
+    """Compute the default ``--out`` path for ad-hoc (non-sweep) runs.
+
+    Layout: ``runs/eval_campaigns/<policy_id>/adhoc/run-NNN-<scenario>-<ts>/``.
+    The ``adhoc/`` subfolder keeps the policy root clean for ``sweep-<NNN>-<ts>/``
+    folders written by ``tools/run_eval_sweep.sh``. Sweep launches override
+    this by passing an explicit ``--out``.
+    """
+    policy_id = policy_config.stem
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    root = REPO_ROOT / "runs" / "eval_campaigns" / policy_id / "adhoc"
+    n = _next_run_number(root)
+    return root / f"run-{n:03d}-{scenario_name}-{ts}"
+
+
+class _Tee:
+    """File-like tee that mirrors writes to a target stream and a file.
+    Used to capture stdout/stderr into ``campaign.log`` while leaving
+    the console output intact."""
+
+    def __init__(self, primary, sink):
+        self._primary = primary
+        self._sink = sink
+
+    def write(self, data):
+        self._primary.write(data)
+        try:
+            self._sink.write(data)
+        except Exception:
+            pass
+        return len(data)
+
+    def flush(self):
+        self._primary.flush()
+        try:
+            self._sink.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self._primary, "isatty", lambda: False)()
+
+    def fileno(self):
+        return self._primary.fileno()
+
+
+def _git_rev() -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        )
+        return out.decode().strip()
+    except Exception:
+        return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scenario", required=True, type=Path,
@@ -134,8 +219,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "(configs/policies/pi_gateway/*.yaml).")
     ap.add_argument("--frame", required=True, type=Path,
                     help="Drone-frame YAML (e.g. configs/frames/carl_dual.yaml).")
-    ap.add_argument("--out", required=True, type=Path,
-                    help="Campaign output dir (will be created).")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Campaign output dir (will be created). When omitted, "
+                         "defaults to "
+                         "runs/eval_campaigns/<policy_id>/run-NNN-<scenario>"
+                         "-<YYYYMMDD_HHMMSS>/ where <policy_id> is the policy "
+                         "YAML stem and NNN auto-increments per policy.")
+    ap.add_argument("--no-viz", action="store_true",
+                    help="Skip auto-emitting the per-campaign HTML reports "
+                         "(viz/trajectories.html + viz/outcome_charts.html) "
+                         "at the end of the run.")
     ap.add_argument("--horizon-s", type=float, default=25.0,
                     help="Per-trial time budget. Default 25 s = 750 steps "
                          "at the YAML's 30 Hz, matching the eval-spec "
@@ -203,6 +296,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise SystemExit(f"bundle dir not found: {bundle_dir} "
                          f"(run scripts/generate_eval_bundles.py first)")
 
+    if args.out is None:
+        args.out = _derive_out_dir(_resolve(args.policy_config), scenario_name)
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    # Tee stdout + stderr into <out>/campaign.log so the on-disk run
+    # bundle is self-contained (no orphan <dir>.log siblings).
+    log_path = args.out / "campaign.log"
+    log_fp = open(log_path, "w", buffering=1)
+    sys.stdout = _Tee(sys.__stdout__, log_fp)
+    sys.stderr = _Tee(sys.__stderr__, log_fp)
+
     cards = _load_trial_cards(bundle_dir, args.scenes, args.trials)
     if not cards:
         raise SystemExit(f"no trial cards matched in {bundle_dir}")
@@ -244,7 +348,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     frame_cfg = load_yaml(_resolve(args.frame))
 
-    args.out.mkdir(parents=True, exist_ok=True)
     # Campaign-level policy manifest — one per campaign, since every trial
     # uses the same policy YAML. Per-trial drift would be a bug, so we
     # don't write one per trial.
@@ -254,6 +357,26 @@ def main(argv: Optional[list[str]] = None) -> int:
         "bridge_admin_url": policy_cfg_yaml.get("bridge_admin_url"),
         "bridge_policy_id": policy_cfg_yaml.get("bridge_policy_id"),
         "traceability": policy_cfg_yaml.get("traceability") or {},
+    }, indent=2))
+
+    scenario_sha = hashlib.sha256(scenario_path.read_bytes()).hexdigest()
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    (args.out / "run_manifest.json").write_text(json.dumps({
+        "cli_argv": list(argv) if argv is not None else sys.argv[1:],
+        "scenario_yaml_path": str(scenario_path),
+        "scenario_sha256": scenario_sha,
+        "scenario_name": scenario_name,
+        "bundle_dir": str(bundle_dir),
+        "policy_id": _resolve(args.policy_config).stem,
+        "git_rev": _git_rev(),
+        "horizon_s": args.horizon_s,
+        "no_rtc": bool(args.no_rtc),
+        "execute_chunk_size_override": args.execute_chunk_size,
+        "recovery_mode": args.recovery_mode,
+        "scenes_filter": list(args.scenes) if args.scenes else None,
+        "trials_filter": list(args.trials) if args.trials else None,
+        "started_at": started_at,
+        # `finished_at` is patched in after the aggregate loop.
     }, indent=2))
 
     # ---- Group trials by scene so we build each renderer once ----------
@@ -739,6 +862,37 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"\n[campaign] done: {cs['n_succeeded']}/{cs['n_trials_total']} succeeded; "
           f"by_outcome={cs['by_outcome']}; "
           f"elapsed={cs['elapsed_total_s']:.0f}s")
+
+    # Patch the finish time into run_manifest.json so the bundle is
+    # self-describing once the run completes.
+    rm_path = args.out / "run_manifest.json"
+    try:
+        rm = json.loads(rm_path.read_text())
+        rm["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        rm["elapsed_total_s"] = cs["elapsed_total_s"]
+        rm_path.write_text(json.dumps(rm, indent=2))
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] could not update run_manifest.json: {e}")
+
+    # Auto-emit per-campaign viz. Failures don't fail the run — the
+    # rollout artifacts are already on disk and `plot_eval_run.py` can
+    # always be re-run by hand.
+    if not args.no_viz:
+        try:
+            from falsify.visualization.eval_report import (
+                emit_outcome_charts_html, emit_trajectories_html,
+            )
+            p1 = emit_trajectories_html(args.out)
+            p2 = emit_outcome_charts_html(args.out)
+            print(f"[viz] wrote {p1.relative_to(args.out.parent)} "
+                  f"({p1.stat().st_size // 1024} KB)")
+            print(f"[viz] wrote {p2.relative_to(args.out.parent)} "
+                  f"({p2.stat().st_size // 1024} KB)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] viz emit failed: {e}  "
+                  "(re-run with scripts/plot_eval_run.py to retry)")
+
+    print(f"[campaign] artifacts → {args.out}")
     return 0
 
 

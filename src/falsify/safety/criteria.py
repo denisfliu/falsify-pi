@@ -544,6 +544,12 @@ class MissGateCriterion(SafetyCriterion):
         # transit.
         from collections import deque
         self._progress: "deque[tuple[float, float]]" = deque()
+        # Auto-inferred expected direction of aperture transit. Set on
+        # the FIRST state to `-sign(initial s)` where s = (xyz - centre)·n.
+        # See OrderedMissGateCriterion for the same pattern + caveats
+        # (detour scenes need an explicit override which we don't plumb
+        # here yet).
+        self._expected_dir_sign: Optional[int] = None
 
     # ---- overrides -----------------------------------------------------
 
@@ -552,6 +558,7 @@ class MissGateCriterion(SafetyCriterion):
         self._transited = False
         self._transit_t = None
         self._ever_inside_aabb = False
+        self._expected_dir_sign = None
         self._progress.clear()
 
     def check(self, state_in_frame: DroneState) -> Optional[Violation]:
@@ -589,12 +596,24 @@ class MissGateCriterion(SafetyCriterion):
             if inside_now and not self._ever_inside_aabb:
                 self._ever_inside_aabb = True
 
-        # ---- (a) plane-crossing check (only meaningful pre-transit) -----
-        # Disabled in eval_stop_mode — classification is post-hoc, and the
-        # in-flight rectangle check was firing false positives when the
-        # policy's natural arc clipped the aperture plane outside the
-        # tight rectangle (notably in center_gate).
-        if prev is not None and not self._transited and not self.eval_stop_mode:
+        # ---- Auto-infer expected aperture-transit direction --------------
+        # First-state-anchored. See OrderedMissGateCriterion for the
+        # same logic + caveat about detour scenes.
+        if self._expected_dir_sign is None:
+            s0 = float(np.dot(xyz - self.centre, self.n))
+            self._expected_dir_sign = (
+                -int(np.sign(s0)) if s0 != 0.0 else +1
+            )
+
+        # ---- (a) plane-crossing check (run in BOTH eval and legacy mode) -
+        # In eval mode we use it only for: (i) latching `_transited`
+        # correctly (so the GOAL_REACHED gate above demands aperture
+        # transit, not just AABB entry), and (ii) firing
+        # wrong-direction MISS_GATE immediately. The
+        # plane-cross-OUTSIDE-aperture MISS_GATE stays gated on
+        # `not eval_stop_mode` (its known false-positive case —
+        # approach arcs can clip the strict rectangle).
+        if prev is not None and not self._transited:
             s0 = float(np.dot(prev - self.centre, self.n))
             s1 = float(np.dot(xyz - self.centre, self.n))
             if s0 != s1 and s0 * s1 <= 0.0:
@@ -606,13 +625,32 @@ class MissGateCriterion(SafetyCriterion):
                 cv = float(np.dot(rel, self.v))
                 inside_u = abs(cu) <= self.hu - self.margin_m
                 inside_v = abs(cv) <= self.hv - self.margin_m
-                if inside_u and inside_v:
+                dir_sign = int(np.sign(s1 - s0))
+                if inside_u and inside_v and dir_sign == self._expected_dir_sign:
                     self._transited = True
                     self._transit_t = float(state.t)
                     # Clear the progress window — distance metric is about
                     # to switch from "aperture centre" to "goal".
                     self._progress.clear()
-                else:
+                elif inside_u and inside_v:
+                    # Inside the aperture but wrong direction — drone is
+                    # backtracking through the gate. Always fires (no
+                    # false-positive concern; direction is unambiguous).
+                    return Violation(
+                        description=(
+                            f"drone crossed gate aperture in the WRONG "
+                            f"direction (dir_sign={dir_sign:+d}, expected "
+                            f"{self._expected_dir_sign:+d})"
+                        ),
+                        value=float(dir_sign),
+                        threshold=float(self._expected_dir_sign),
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"mode": "wrong_direction_aperture",
+                               "dir_sign": dir_sign,
+                               "expected_dir_sign": self._expected_dir_sign,
+                               "cu": cu, "cv": cv},
+                    )
+                elif not self.eval_stop_mode:
                     worst = max(abs(cu) - self.hu, abs(cv) - self.hv)
                     return Violation(
                         description=(
@@ -624,7 +662,9 @@ class MissGateCriterion(SafetyCriterion):
                         value=float(worst),
                         threshold=0.0,
                         failure_type=FailureType.MISS_GATE,
-                        extra={"cu": cu, "cv": cv, "hu": self.hu, "hv": self.hv},
+                        extra={"mode": "plane_outside_aperture",
+                               "cu": cu, "cv": cv,
+                               "hu": self.hu, "hv": self.hv},
                     )
 
         # ---- (b/c/d) goal-aware checks — only when goal is configured ---
@@ -658,18 +698,18 @@ class MissGateCriterion(SafetyCriterion):
         # ---- goal-proximity stop ---------------------------------------
         # In `eval_stop_mode`, fire GOAL_REACHED on goal proximity ONLY
         # when ALL three conditions hold:
-        #   (i)  drone has been inside the gate AABB at least once
-        #        (`_ever_inside_aabb`)
-        #   (ii) drone is NOT currently inside the AABB (post-transit hover,
-        #        not mid-passage about to collide with a post)
-        #   (iii) drone is in the goal-tolerance region (box or sphere)
-        # Without (ii) the loose tolerance would mask collisions: a drone
-        # mid-AABB but within goal-prox sphere gets stopped before the
-        # collision check fires a step later.
+        #   (i)  drone has APERTURE-TRANSITED the gate at least once
+        #        (`_transited`) — was previously a loose AABB-entry
+        #        latch, tightened to aperture-transit so a drone that
+        #        clips an AABB edge without threading the rectangle
+        #        can no longer satisfy SUCCESS.
+        #   (ii) drone is NOT currently inside the AABB (post-transit
+        #        hover, not mid-passage about to collide with a post).
+        #   (iii) drone is in the goal-tolerance region (box or sphere).
         # If no transit AABB is configured we fall back to the legacy
         # "any goal-proximity stops" behavior (purely goal-distance based).
         gate_aabb_required = self._transit_aabb_min is not None
-        transit_ok = (not gate_aabb_required) or self._ever_inside_aabb
+        transit_ok = (not gate_aabb_required) or self._transited
         outside_aabb = (not gate_aabb_required) or (not inside_now)
         if (self.eval_stop_mode
                 and transit_ok
@@ -884,9 +924,42 @@ class OrderedMissGateCriterion(SafetyCriterion):
         self._transited_2: bool = False
         self._transit_t_1: Optional[float] = None
         self._transit_t_2: Optional[float] = None
+        # First time the drone EXITED each AABB after first entering it.
+        # Used by recovery-seed scoping: a between_gates failure should
+        # only sample safe states from states with t ≥ _transit_t_1_exit
+        # (i.e., the drone has cleared the gate, not just entered it).
+        # Without the exit guard, the sampler can pick a mid-transit
+        # state inside the AABB and the recovery trim jumps to
+        # pre_gate_2 from there — visually "skipping" the gate.
+        self._transit_t_1_exit: Optional[float] = None
+        self._transit_t_2_exit: Optional[float] = None
         # AABB latches (used by eval_stop_mode; harmless when off).
         self._ever_inside_aabb_1: bool = False
         self._ever_inside_aabb_2: bool = False
+        # Expected direction of aperture transit per gate. Auto-
+        # inferred from the first state's signed distance to each
+        # gate plane — drone is expected to cross AWAY from its
+        # initial side. ``expected_dir_sign_X`` is the expected
+        # sign of (s_after - s_before) at an inside crossing.
+        # +1 means drone goes from -s side to +s side; -1 means the
+        # reverse. Used to detect wrong-direction crossings (drone
+        # going backwards through aperture) and fire MISS_GATE
+        # immediately. Detour scenes that don't start on the
+        # "wrong side" of the gate will trip this — for those, an
+        # explicit override should be plumbed via constructor (TODO).
+        self._expected_dir_sign_1: Optional[int] = None
+        self._expected_dir_sign_2: Optional[int] = None
+        # First time the drone crossed each gate's PLANE in the expected
+        # direction (regardless of whether it was inside the aperture
+        # rectangle). Stamped on any forward sign-flip — so a drone
+        # that clips OUTSIDE the aperture but still ends up on the far
+        # side of the plane gets recorded. Used by the recovery-seed
+        # sampler to scope a pre-gate failure's seed to states BEFORE
+        # the bypass: otherwise the planner has to first reverse back
+        # north of the gate, then re-approach south through it (the
+        # "doubles back" pathology).
+        self._first_plane_cross_t_1: Optional[float] = None
+        self._first_plane_cross_t_2: Optional[float] = None
         from collections import deque
         self._progress: "deque[tuple[float, float]]" = deque()
 
@@ -898,22 +971,30 @@ class OrderedMissGateCriterion(SafetyCriterion):
         self._transited_2 = False
         self._transit_t_1 = None
         self._transit_t_2 = None
+        self._transit_t_1_exit = None
+        self._transit_t_2_exit = None
         self._ever_inside_aabb_1 = False
         self._ever_inside_aabb_2 = False
+        self._expected_dir_sign_1 = None
+        self._expected_dir_sign_2 = None
+        self._first_plane_cross_t_1 = None
+        self._first_plane_cross_t_2 = None
         self._progress.clear()
 
     def _phase(self) -> str:
-        """Compositional rollout phase, derived from whichever transit
-        signal the current mode uses (AABB latches in eval_stop_mode;
-        plane-cross flags otherwise). Stamped into Violation.extra so
-        the campaign aggregate can show which-gate-was-passed breakdowns.
+        """Compositional rollout phase, derived from APERTURE-TRANSIT
+        latches (`_transited_*`) in both eval and legacy modes.
+
+        Using the AABB latches instead (the prior behavior) misclassified
+        gate-1 collisions: a drone clipping a post of gate_1 was inside
+        the AABB at the moment of impact, so `_ever_inside_aabb_1=True`
+        → phase=between_gates → the recovery planner trimmed all
+        pre-gate-1 waypoints and replanned straight toward gate_2,
+        skipping gate_1 entirely. Aperture transit is the right signal:
+        only a true aperture crossing should move the phase forward.
         """
-        if self.eval_stop_mode and self._transit_aabb_1_min is not None:
-            t1 = self._ever_inside_aabb_1
-            t2 = self._ever_inside_aabb_2
-        else:
-            t1 = self._transited_1
-            t2 = self._transited_2
+        t1 = self._transited_1
+        t2 = self._transited_2
         if not t1:
             return "pre_gate_1"
         if not t2:
@@ -923,6 +1004,29 @@ class OrderedMissGateCriterion(SafetyCriterion):
     def check(self, state_in_frame: DroneState) -> Optional[Violation]:
         # All the logic needs `prev_xyz`; see `check_with_graph`.
         return None
+
+    def phase_snapshot(self) -> dict:
+        """Snapshot of the criterion's compositional progress at the
+        current step. The ``FailureDetector`` merges this into every
+        ``FailureRecord.extra`` (without overwriting keys already on
+        the firing violation), so failures from OTHER criteria — a
+        ``PointCloudCollisionCriterion`` clip post-gate-1, for
+        instance — still carry the gate-1 transit info the recovery
+        sampler needs to scope post-gate-1 safe-history correctly.
+
+        Keys are namespaced to avoid colliding with other criteria.
+        """
+        return {
+            "phase": self._phase(),
+            "transit_time_1": self._transit_t_1,
+            "transit_time_2": self._transit_t_2,
+            "transit_time_1_exit": self._transit_t_1_exit,
+            "transit_time_2_exit": self._transit_t_2_exit,
+            "ever_inside_aabb_1": self._ever_inside_aabb_1,
+            "ever_inside_aabb_2": self._ever_inside_aabb_2,
+            "first_plane_cross_t_1": self._first_plane_cross_t_1,
+            "first_plane_cross_t_2": self._first_plane_cross_t_2,
+        }
 
     def check_with_graph(
         self, state: DroneState, frame_graph: FrameGraph
@@ -940,6 +1044,28 @@ class OrderedMissGateCriterion(SafetyCriterion):
         prev = self._prev_xyz
         self._prev_xyz = xyz
 
+        # ---- Auto-infer expected aperture-transit direction --------------
+        # On the FIRST state, compute the signed distance to each gate's
+        # plane. The drone is expected to cross AWAY from that initial
+        # side — so `expected_dir_sign = -sign(initial_s)`. Caveat: this
+        # only works for trajectories whose initial position is on the
+        # correct entry side; scenes that DETOUR around the gate first
+        # (e.g. center_from_right starts at +y but should approach from
+        # -y) will register wrong-direction on the eventual crossing.
+        # For those, an explicit override is the right fix (TODO);
+        # today the existing post-hoc `expected_dy_sign` demotion
+        # handles them.
+        if self._expected_dir_sign_1 is None:
+            s0_1 = float(np.dot(xyz - self.centre_1, self.n_1))
+            self._expected_dir_sign_1 = (
+                -int(np.sign(s0_1)) if s0_1 != 0.0 else +1
+            )
+        if self._expected_dir_sign_2 is None:
+            s0_2 = float(np.dot(xyz - self.centre_2, self.n_2))
+            self._expected_dir_sign_2 = (
+                -int(np.sign(s0_2)) if s0_2 != 0.0 else +1
+            )
+
         # ---- AABB containment latches (eval_stop_mode) -------------------
         # Order is enforced: gate-2 only latches *after* gate-1 has latched,
         # so a drone that enters the center AABB before the original gate
@@ -955,12 +1081,16 @@ class OrderedMissGateCriterion(SafetyCriterion):
             )
             if inside_now_1 and not self._ever_inside_aabb_1:
                 self._ever_inside_aabb_1 = True
-                # Mirror the plane-cross legacy: stamp transit time on
-                # first entry so post-hoc / sampling can scope on it.
-                if self._transit_t_1 is None:
-                    self._transit_t_1 = float(state.t)
                 if self.eval_stop_mode:
                     self._progress.clear()
+            # Track FIRST exit from gate_1 AABB AFTER a real aperture
+            # transit. Gating on `_transited_1` prevents AABB-clip-only
+            # trajectories (drone hit a post without threading the
+            # aperture) from stamping a fake exit time that the
+            # recovery-seed sampler would then scope on.
+            if (self._transited_1 and not inside_now_1
+                    and self._transit_t_1_exit is None):
+                self._transit_t_1_exit = float(state.t)
         if self._transit_aabb_2_min is not None:
             inside_now_2 = bool(
                 (xyz >= self._transit_aabb_2_min).all()
@@ -969,26 +1099,33 @@ class OrderedMissGateCriterion(SafetyCriterion):
             if (inside_now_2 and not self._ever_inside_aabb_2
                     and self._ever_inside_aabb_1):
                 self._ever_inside_aabb_2 = True
-                if self._transit_t_2 is None:
-                    self._transit_t_2 = float(state.t)
                 if self.eval_stop_mode:
                     self._progress.clear()
+            if (self._transited_2 and not inside_now_2
+                    and self._transit_t_2_exit is None):
+                self._transit_t_2_exit = float(state.t)
 
         # ---- Plane-crossing check for the currently-active gate ----------
-        # Disabled in eval_stop_mode — same reasoning as MissGateCriterion:
-        # the natural arc of a drone approach can clip the gate plane
-        # outside the strict rectangle without indicating policy failure.
-        # In eval mode we rely on the AABB latches above + the post-hoc
-        # phase classification.
+        # The plane-cross-OUTSIDE-aperture MISS_GATE violation is
+        # disabled in eval_stop_mode (same reasoning as
+        # MissGateCriterion: the natural arc of an approach can clip
+        # the plane outside the strict rectangle without indicating
+        # policy failure). But the aperture-transit LATCH itself runs
+        # in BOTH modes — the eval-mode GOAL_REACHED gate below uses it
+        # to demand the drone actually threaded each gate, not just
+        # clipped an AABB edge.
         def _try_transit(prev_xyz, cur_xyz, centre, u, v, n, hu, hv):
-            """Return (crossed, inside, cu, cv) for the plane swept
-            between ``prev → cur``. ``crossed`` is True iff signed
+            """Return (crossed, inside, cu, cv, dir_sign) for the plane
+            swept between ``prev → cur``. ``crossed`` is True iff signed
             distance changed sign; ``inside`` is True iff the crossing
-            point lies inside the (margin-shrunk) aperture rectangle."""
+            point lies inside the (margin-shrunk) aperture rectangle;
+            ``dir_sign`` is +1 if the drone moved from -s side → +s side
+            (i.e. with the normal), -1 if reverse. 0 only when not
+            crossed."""
             s0 = float(np.dot(prev_xyz - centre, n))
             s1 = float(np.dot(cur_xyz - centre, n))
             if s0 == s1 or s0 * s1 > 0.0:
-                return False, False, 0.0, 0.0
+                return False, False, 0.0, 0.0, 0
             t = s0 / (s0 - s1)
             cross = prev_xyz + t * (cur_xyz - prev_xyz)
             rel = cross - centre
@@ -996,19 +1133,51 @@ class OrderedMissGateCriterion(SafetyCriterion):
             cv = float(np.dot(rel, v))
             inside_u = abs(cu) <= hu - self.margin_m
             inside_v = abs(cv) <= hv - self.margin_m
-            return True, (inside_u and inside_v), cu, cv
+            dir_sign = int(np.sign(s1 - s0))
+            return True, (inside_u and inside_v), cu, cv, dir_sign
 
-        if prev is not None and not self._transited_1 and not self.eval_stop_mode:
-            crossed, inside, cu, cv = _try_transit(
+        # Check BOTH gate planes unconditionally (until each is
+        # transited). Out-of-order — drone crosses gate_2's aperture
+        # before transiting gate_1 — fires immediate MISS_GATE rather
+        # than being silently ignored.
+        if prev is not None and not self._transited_1:
+            crossed, inside, cu, cv, dir_sign = _try_transit(
                 prev, xyz, self.centre_1, self.u_1, self.v_1, self.n_1,
                 self.hu_1, self.hv_1,
             )
             if crossed:
-                if inside:
+                # Stamp the first forward plane-crossing time (in OR
+                # out of aperture) so the recovery seed sampler can
+                # avoid sampling from past gate-1 when phase=pre_gate_1.
+                if (self._first_plane_cross_t_1 is None
+                        and dir_sign == self._expected_dir_sign_1):
+                    self._first_plane_cross_t_1 = float(state.t)
+                if inside and dir_sign == self._expected_dir_sign_1:
                     self._transited_1 = True
                     self._transit_t_1 = float(state.t)
                     self._progress.clear()   # distance target switches to gate 2
-                else:
+                elif inside:
+                    # Inside the aperture but wrong direction — drone
+                    # is going back through the gate. Fires regardless
+                    # of eval_stop_mode (unambiguous failure, no
+                    # false-positive concern).
+                    return Violation(
+                        description=(
+                            f"drone crossed gate-1 aperture in the WRONG "
+                            f"direction (dir_sign={dir_sign:+d}, expected "
+                            f"{self._expected_dir_sign_1:+d})"
+                        ),
+                        value=float(dir_sign),
+                        threshold=float(self._expected_dir_sign_1),
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_1",
+                               "phase": self._phase(),
+                               "mode": "wrong_direction_aperture",
+                               "dir_sign": dir_sign,
+                               "expected_dir_sign": self._expected_dir_sign_1,
+                               "cu": cu, "cv": cv},
+                    )
+                elif not self.eval_stop_mode:
                     worst = max(abs(cu) - self.hu_1, abs(cv) - self.hv_1)
                     return Violation(
                         description=(
@@ -1025,18 +1194,56 @@ class OrderedMissGateCriterion(SafetyCriterion):
                                "cu": cu, "cv": cv,
                                "hu": self.hu_1, "hv": self.hv_1},
                     )
-        elif (prev is not None and self._transited_1
-                and not self._transited_2 and not self.eval_stop_mode):
-            crossed, inside, cu, cv = _try_transit(
+
+        if prev is not None and not self._transited_2:
+            crossed, inside, cu, cv, dir_sign = _try_transit(
                 prev, xyz, self.centre_2, self.u_2, self.v_2, self.n_2,
                 self.hu_2, self.hv_2,
             )
             if crossed:
-                if inside:
+                if (self._first_plane_cross_t_2 is None
+                        and dir_sign == self._expected_dir_sign_2):
+                    self._first_plane_cross_t_2 = float(state.t)
+                if inside and not self._transited_1:
+                    # Out-of-order: drone is threading gate_2 before
+                    # gate_1. Treat as a MISS — the policy went to the
+                    # wrong gate / wrong order.
+                    return Violation(
+                        description=(
+                            "drone crossed gate-2 aperture BEFORE "
+                            "transiting gate-1 (out of order)"
+                        ),
+                        value=0.0,
+                        threshold=0.0,
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_2",
+                               "phase": self._phase(),
+                               "mode": "out_of_order_aperture",
+                               "dir_sign": dir_sign,
+                               "cu": cu, "cv": cv},
+                    )
+                if inside and dir_sign == self._expected_dir_sign_2:
                     self._transited_2 = True
                     self._transit_t_2 = float(state.t)
                     self._progress.clear()   # distance target switches to goal
-                else:
+                elif inside:
+                    return Violation(
+                        description=(
+                            f"drone crossed gate-2 aperture in the WRONG "
+                            f"direction (dir_sign={dir_sign:+d}, expected "
+                            f"{self._expected_dir_sign_2:+d})"
+                        ),
+                        value=float(dir_sign),
+                        threshold=float(self._expected_dir_sign_2),
+                        failure_type=FailureType.MISS_GATE,
+                        extra={"which_gate": "gate_2",
+                               "phase": self._phase(),
+                               "mode": "wrong_direction_aperture",
+                               "dir_sign": dir_sign,
+                               "expected_dir_sign": self._expected_dir_sign_2,
+                               "cu": cu, "cv": cv},
+                    )
+                elif not self.eval_stop_mode:
                     worst = max(abs(cu) - self.hu_2, abs(cv) - self.hv_2)
                     return Violation(
                         description=(
@@ -1059,21 +1266,23 @@ class OrderedMissGateCriterion(SafetyCriterion):
             return None
         dist_to_goal = float(np.linalg.norm(xyz - self.goal_xyz))
 
-        # ---- eval_stop_mode: GOAL_REACHED only after both AABB transits,
-        # currently outside both AABBs, and within goal tolerance. Mirrors
-        # MissGateCriterion's post-AABB gate so we don't fire a success-
-        # stop while the drone is mid-aperture (a collision could still
-        # happen one step later).
+        # ---- eval_stop_mode: GOAL_REACHED only when the drone has
+        # actually transited BOTH apertures (not just clipped the AABB
+        # edges), is currently outside both AABBs, and within goal
+        # tolerance. The aperture-transit latches `_transited_1/2` are
+        # now maintained in eval_stop_mode as well (see the plane-cross
+        # check above), so a path that touches both AABBs without
+        # threading the apertures won't satisfy this gate.
         if self.eval_stop_mode:
-            both_latched = self._ever_inside_aabb_1 and self._ever_inside_aabb_2
+            both_transited = self._transited_1 and self._transited_2
             outside_now = (not inside_now_1) and (not inside_now_2)
-            if (both_latched and outside_now
+            if (both_transited and outside_now
                     and dist_to_goal <= self.goal_tolerance_m):
                 return Violation(
                     description=(
                         f"drone reached goal proximity (d={dist_to_goal:.3f} m "
                         f"≤ {self.goal_tolerance_m:.3f} m) after both gate "
-                        "transits; stopping rollout"
+                        "aperture transits; stopping rollout"
                     ),
                     value=dist_to_goal,
                     threshold=self.goal_tolerance_m,
@@ -1081,8 +1290,11 @@ class OrderedMissGateCriterion(SafetyCriterion):
                     extra={"phase": "post_gate_2",
                            "mode": "goal_reached_both_gates",
                            "dist_to_goal": dist_to_goal,
+                           "both_aperture_transited": True,
                            "transit_time_1": self._transit_t_1,
-                           "transit_time_2": self._transit_t_2},
+                           "transit_time_2": self._transit_t_2,
+                           "transit_time_1_exit": self._transit_t_1_exit,
+                           "transit_time_2_exit": self._transit_t_2_exit},
                 )
         else:
             # ---- Legacy skip check: reached goal proximity before
@@ -1129,7 +1341,13 @@ class OrderedMissGateCriterion(SafetyCriterion):
 
         # ---- Stuck check against the current target ---------------------
         # In eval_stop_mode the AABB latches drive the target switch;
-        # otherwise the legacy plane-cross transit flags do.
+        # otherwise the legacy plane-cross transit flags do. AABB-based
+        # target switching is intentional: a drone that clipped past
+        # gate_1 (touched the AABB but didn't thread the aperture) IS
+        # geographically past gate_1, so the next target is gate_2 —
+        # the failure tag stays "between_gates". The recovery-seed
+        # sampler handles the "don't seed from before the bypass"
+        # concern via `first_plane_cross_t_1` (see orchestrator).
         if self.min_progress_window_s is None:
             return None
         if self.eval_stop_mode and self._transit_aabb_1_min is not None:
@@ -1191,6 +1409,8 @@ class OrderedMissGateCriterion(SafetyCriterion):
                        "dist_to_target": dist_to_target,
                        "dist_to_goal": dist_to_goal,
                        "transit_time_1": self._transit_t_1,
-                       "transit_time_2": self._transit_t_2},
+                       "transit_time_2": self._transit_t_2,
+                       "transit_time_1_exit": self._transit_t_1_exit,
+                       "transit_time_2_exit": self._transit_t_2_exit},
             )
         return None

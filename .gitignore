@@ -13,3 +13,10 @@ runs/
 # Datasets are too large for git; users symlink or copy their own data dir.
 # See README for layout expectations.
 /data
+
+# Transient Pi-gateway YAMLs (`live_*.yaml`) hold endpoint quirks of
+# whatever bridge is *currently* running — host-specific stopgaps until
+# moraband restarts on the multi-policy bridge, at which point the
+# committed YAMLs take over. Always env-var indirection for `api_key`,
+# never literal — but gitignore as belt-and-suspenders.
+/configs/policies/pi_gateway/live_*.yaml

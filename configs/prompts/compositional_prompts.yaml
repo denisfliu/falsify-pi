@@ -6,8 +6,8 @@
 
 prompts:
   left_then_center:
-    task: "go through the left gate, then through the center gate and hover over the stuffed animal"
+    task: "go through the gate on the left, then through the center gate and hover over the stuffed animal"
     source: configs/prompts/compositional_prompts.yaml (manual)
   right_then_center:
-    task: "go through the right gate, then through the center gate and hover over the stuffed animal"
+    task: "go through the gate on the right, then through the center gate and hover over the stuffed animal"
     source: configs/prompts/compositional_prompts.yaml (manual)

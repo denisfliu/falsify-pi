@@ -32,7 +32,7 @@ gsplat_data_cwd: ../../data/gate_scenes_export/left_scene
 # treat any deliberate off-distribution probe as a *perturbation*, not a
 # default.
 start_position_mocap: [0.00, 0.00, 1.50]
-goal_position_mocap:  [1.50, 0.70, 1.50]
+goal_position_mocap:  [1.525, -0.615, 1.0]   # shared "stuffed animal" hover; matches courses/through_left_gate.yaml hover waypoint
 gate_position_mocap:  [0.86, 0.69, 1.50]
 
 # Optional: random ±half_widths uniform offset on the start position.

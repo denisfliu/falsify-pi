@@ -89,11 +89,44 @@ class CoursedMpcPlanner:
 
     # ---- public API ---------------------------------------------------
 
-    def plan(self, start: Point, goal: Point) -> RecoveryResult:
+    def plan(
+        self,
+        start: Point,
+        goal: Point,
+        *,
+        failure_phase: Optional[str] = None,
+    ) -> RecoveryResult:
+        """Plan a recovery trajectory from ``start`` along the course.
+
+        Parameters
+        ----------
+        start, goal
+            Frame-tagged Points in NED.
+        failure_phase
+            Optional phase tag from the failure (``OrderedMissGateCriterion``
+            stamps ``"pre_gate_1"`` / ``"between_gates"`` / ``"post_gate_2"``
+            into ``Violation.extra["phase"]`` on compositional scenes).
+            When set, the recovery course is trimmed so the seed targets
+            the appropriate downstream waypoint instead of re-flying
+            the whole course from the start:
+
+            - ``between_gates``: drop everything up to (but not
+              including) the first waypoint whose name starts with
+              ``pre_gate_2`` — recovery jumps straight from seed to
+              pre-center-gate.
+            - ``post_gate_2``: drop everything up to (but not including)
+              the first waypoint whose name starts with ``hover`` —
+              recovery jumps from seed straight to the hover return.
+
+            For single-gate courses (no compositional phase), or for
+            ``pre_gate_1`` / ``None``, no trim is applied and behaviour
+            matches the pre-trim version.
+        """
         assert_frame(start, "ned")
         assert_frame(goal, "ned")
 
         course = self._load_course()
+        course = self._trim_course_for_phase(course, failure_phase)
         rewritten = self._replace_start_waypoint(course, start)
 
         if self.planner_kind == "spline":
@@ -205,6 +238,55 @@ class CoursedMpcPlanner:
             print(f"[coursed_mpc] applied gate_deltas to {n_moved}/"
                   f"{len(course.waypoints)} waypoints inside gate AABB")
         return dataclasses.replace(course, waypoints=tuple(new_waypoints))
+
+    # Map failure phase → name-prefix of the FIRST course waypoint we
+    # want the recovery to head toward. Convention matches the
+    # `through_{left,right}_and_center.yaml` waypoint names:
+    #
+    #   "between_gates"  ⇒ drone passed gate_1 but missed gate_2 ⇒
+    #                       jump from seed to the pre-center-gate waypoint.
+    #   "post_gate_2"    ⇒ drone passed both gates but didn't reach goal
+    #                       ⇒ jump from seed to the hover return.
+    #
+    # Single-gate courses don't carry these phases so the trim never
+    # fires for them.
+    _PHASE_FIRST_WAYPOINT_PREFIX: dict[str, str] = {
+        "between_gates": "pre_gate_2",
+        "post_gate_2": "hover",
+    }
+
+    def _trim_course_for_phase(
+        self, course: Course, failure_phase: Optional[str],
+    ) -> Course:
+        """Drop course waypoints the seed has already passed, based on
+        the failure's compositional phase. See ``plan()``'s
+        ``failure_phase`` arg docs for the trim semantics. No-op when
+        ``failure_phase`` doesn't match a known phase OR the named
+        target waypoint isn't found in this course.
+        """
+        if failure_phase is None:
+            return course
+        target_prefix = self._PHASE_FIRST_WAYPOINT_PREFIX.get(failure_phase)
+        if target_prefix is None:
+            return course
+        # Find the first waypoint whose name starts with the target prefix.
+        keep_start_idx: Optional[int] = None
+        for i, wp in enumerate(course.waypoints):
+            if wp.name.startswith(target_prefix):
+                keep_start_idx = i
+                break
+        if keep_start_idx is None or keep_start_idx == 0:
+            # Course doesn't have the named waypoint (single-gate course
+            # got a compositional phase by accident) OR it's already
+            # waypoint 0 ⇒ nothing to trim.
+            return course
+        new_waypoints = tuple(course.waypoints[keep_start_idx:])
+        print(
+            f"[coursed_mpc] failure_phase={failure_phase!r}: trimmed "
+            f"{keep_start_idx} pre-{target_prefix} waypoint(s); "
+            f"recovery starts heading toward {new_waypoints[0].name!r}"
+        )
+        return replace(course, waypoints=new_waypoints)
 
     def _replace_start_waypoint(self, course: Course, start_ned: Point) -> Course:
         """Return a copy of ``course`` whose first waypoint sits at ``start_ned``.

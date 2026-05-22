@@ -237,13 +237,49 @@ def convert_dataset(src_ds: Path, out_ds: Path) -> None:
 
 
 def main():
-    datasets = sorted(d for d in SRC_ROOT.iterdir() if d.is_dir())
-    print(f"converting {len(datasets)} dataset(s) under {SRC_ROOT}")
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Convert one or more LeRobot v2.1 datasets to v3.0 layout.",
+        epilog=(
+            "Default (no args): converts every dataset under data/no_3pov/ "
+            "into data/no_3pov_v3/<name>/. Use --dataset to convert a "
+            "single bundle from anywhere (e.g. data/atomic_datasets/<name>) "
+            "into --out (or data/no_3pov_v3/<name> by default)."
+        ),
+    )
+    ap.add_argument("--dataset", type=Path, default=None,
+                    help="Single v2.1 dataset directory to convert. "
+                         "Mutually exclusive with --src-root.")
+    ap.add_argument("--src-root", type=Path, default=None,
+                    help="Parent directory containing v2.1 datasets to "
+                         "convert as a batch (default: data/no_3pov/).")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Output path. With --dataset: the destination "
+                         "v3 dataset dir. With --src-root: the parent "
+                         "directory holding the converted v3 datasets "
+                         "(default: data/no_3pov_v3/).")
+    args = ap.parse_args()
+
+    if args.dataset is not None and args.src_root is not None:
+        raise SystemExit("--dataset and --src-root are mutually exclusive")
+
+    if args.dataset is not None:
+        src = args.dataset.resolve()
+        out = (args.out or (OUT_ROOT / src.name)).resolve()
+        print(f"converting single dataset: {src} → {out}")
+        convert_dataset(src, out)
+        print(f"[done] → {out}")
+        return
+
+    src_root = (args.src_root or SRC_ROOT).resolve()
+    out_root = (args.out or OUT_ROOT).resolve()
+    datasets = sorted(d for d in src_root.iterdir() if d.is_dir())
+    print(f"converting {len(datasets)} dataset(s) under {src_root}")
     for ds in datasets:
-        out = OUT_ROOT / ds.name
+        out = out_root / ds.name
         convert_dataset(ds, out)
         print()
-    print(f"[done] all conversions under {OUT_ROOT}")
+    print(f"[done] all conversions under {out_root}")
 
 
 if __name__ == "__main__":

@@ -7,14 +7,36 @@ scripts/summarize_eval_campaign.py).
 ## Pipeline
 
 ```
-scenario YAML    →    trial cards (JSON)        →    per-trial outputs    →    campaign summary
-configs/eval_suite/  runs/eval_bundles/<name>/        runs/eval_campaigns/<name>/<scene>/trial_NNN/
+scenario YAML    →    trial cards (JSON)        →    per-trial outputs    →    campaign summary + viz
+configs/eval_suite/  runs/eval_bundles/<name>/        runs/eval_campaigns/<policy_id>/<group>/run-NNN-<scenario>-<ts>/
+                                                          <scene>/trial_NNN/                  (per-trial)
+                                                          campaign_summary.json
+                                                          policy_manifest.json
+                                                          run_manifest.json
+                                                          campaign.log
+                                                          viz/trajectories.html
+                                                          viz/outcome_charts.html
 ```
 
 Trial cards are **absolute** descriptions of each trial (start position
 in mocap+ned, gate-perturbation deltas in mocap). Two policies hitting
 the same card see byte-identical conditions, regardless of any later
 refactor to the random samplers.
+
+Campaign output dirs are **rooted per policy**: ``<policy_id>`` is the
+stem of the ``--policy-config`` YAML (e.g.
+``nonhistory_ccvhs1do_20k``). Inside each policy folder, runs are
+grouped under either:
+
+- ``sweep-NNN-<YYYYMMDD_HHMMSS>[-<tag>]/`` — produced by
+  ``tools/run_eval_sweep.sh``. ``NNN`` is shared across all policies in
+  the same launch so cohort-paired comparisons line up by folder name.
+  Carries a ``sweep_manifest.json``.
+- ``adhoc/`` — produced by a one-off ``scripts/run_eval_campaign.py``
+  invocation without ``--out``.
+
+Inside the grouping folder each campaign is ``run-NNN-<scenario>-<ts>/``
+where ``NNN`` auto-increments within that grouping folder.
 
 ## Scenarios shipped
 
@@ -32,19 +54,33 @@ refactor to the random samplers.
 PYTHONPATH=src python scripts/generate_eval_bundles.py \
     --scenario configs/eval_suite/pure.yaml
 
-# 2. Run a campaign against a policy (Pi-gateway only at the moment).
+# 2a. Run a single ad-hoc campaign against a policy (Pi-gateway only).
+#     --out is optional; when omitted the script writes to
+#     runs/eval_campaigns/<policy_id>/adhoc/run-NNN-<scenario>-<ts>/ and
+#     emits viz/trajectories.html + viz/outcome_charts.html inside it.
+#     Add --no-viz to skip the HTML reports.
 bash -c 'export PI_API_KEY=...; source tools/env.sh; \
     source tools/pi_inference_env.sh; \
     PYTHONPATH=src python scripts/run_eval_campaign.py \
         --scenario configs/eval_suite/pure.yaml \
         --policy-config configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml \
-        --frame configs/frames/carl_dual.yaml \
-        --out runs/eval_campaigns/<campaign_name>'
+        --frame configs/frames/carl_dual.yaml'
+
+# 2b. Run a full sweep (policies × scenarios). All runs in one launch
+#     land under a shared sweep-NNN-<ts>/ folder per policy so cohort-
+#     paired comparisons are by-folder. Edit the POLICIES + SCENARIOS
+#     arrays at the top of tools/run_eval_sweep.sh to change the cohort.
+bash tools/run_eval_sweep.sh --tag goal-fix   # --tag is optional
 
 # 3. Summarise (one or more campaigns side-by-side).
 PYTHONPATH=src python scripts/summarize_eval_campaign.py \
-    runs/eval_campaigns/pi07_history_pure \
-    runs/eval_campaigns/pi07_nonhistory_pure
+    runs/eval_campaigns/history_h6jtbq0w_20k/sweep-001-*/run-001-pure-* \
+    runs/eval_campaigns/nonhistory_ccvhs1do_20k/sweep-001-*/run-001-pure-*
+
+# 4. Backfill / re-render viz on an existing campaign dir (no GPU,
+#    no rollout — pure consumer of the on-disk artifacts).
+PYTHONPATH=src python scripts/plot_eval_run.py \
+    runs/eval_campaigns/<policy_id>/run-NNN-<scenario>-<ts>
 ```
 
 ## Recovery toggle

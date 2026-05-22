@@ -63,8 +63,8 @@
   names come from `configs/prompts/atomic_dataset_prompts.yaml`, generated
   by `scripts/build_prompt_registry.py` from
   `data/atomic_datasets/*/meta/tasks.jsonl`. Keys today:
-  `center_from_left`, `center_from_right`, `left_gate`, `right_gate`,
-  `real_left`, `real_right`. Refresh after adding a dataset.
+  `center_from_left`, `center_from_right`, `left_gate`, `right_gate`.
+  Refresh after adding a dataset.
 - `run_vla_episode.py` — full VLA-driven rollout against either the
   OpenPI server (default) or a `PiGatewayPolicy` (when
   `--policy-config configs/policies/pi_gateway/<x>.yaml` is passed).

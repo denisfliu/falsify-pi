@@ -1,0 +1,62 @@
+# Compositional recovery course: thread the RIGHT gate, then the CENTER
+# duplicate (using the from_right approach pattern — drone stays south
+# between the two gates), then hover over the stuffed animal. Companion
+# to through_left_and_center.yaml; consumed via
+# configs/recovery/right_and_center_mpc.yaml.
+#
+# Scene layout (MOCAP, post scene_edits.duplicate_aabb):
+#   gate_1 plane:           through anchor (0.544, -1.147, 0.074),
+#                           normal (0.385, -0.923, 0) — drone enters
+#                           traveling roughly (-0.385, +0.923).
+#                           Yaw at gate_1 = atan2(-0.923, 0.385) ≈ -1.18.
+#   gate_2 plane:           SAME as left_and_center — y = -0.25, anchor
+#                           (2.75, -0.25, 1.5), yaw -π/2. Approached from
+#                           the SOUTH side here (mirrors
+#                           through_center_gate_from_right.yaml's
+#                           pre_gate / post_gate waypoints).
+#   right_table footprint:  x ∈ [1.20, 1.85], y ∈ [-0.85, 0.40],
+#                           top z ≈ 0.6.
+#
+# After gate_1 the drone is south-east (y ≈ -1.3). pre_gate_2 sits south
+# of the center plane at (2.75, -0.75, 1.5) so the spline between
+# post_gate_1 and pre_gate_2 stays at y < -0.75 < table's y_min=-0.83's
+# margin — no table clip. The gate_2 transit then crosses to y=-0.25
+# (the plane) and overshoots north to (2.75, 0.23, 1.4) — same overshoot
+# the single-gate from_right course uses. The hover return passes
+# through the gate plane again at x≈2.05 (outside the gate AABB x_min=
+# 2.25), so the per-aperture latch counts gate_2 transit exactly once.
+
+name: through_right_and_center
+scene: configs/scenes/right_and_center.yaml
+frame: mocap
+fps: 10
+total_time_s: 45.0
+yaw_mode: tangent
+
+waypoints:
+  - { name: start,       p: [0.00,  0.00,  1.5],  yaw:  0.0,    t:  0.0 }
+  - { name: approach_1,  p: [0.30, -0.55,  1.5] }
+  - { name: gate_1,      p: [0.65, -1.05,  1.5],  yaw: -1.18   }
+  - { name: post_gate_1, p: [1.20, -1.30,  1.45] }
+  - { name: pre_gate_2,  p: [2.75, -0.75,  1.5] }     # from_right: south of center gate plane
+  - { name: gate_2,      p: [2.75, -0.25,  1.5],  yaw: -1.5708 }
+  - { name: post_gate_2, p: [2.75,  0.23,  1.4] }     # from_right: north overshoot past the plane
+  # arc_left forces the spline to swing wide LEFT (+y, above the table)
+  # on the return to hover, so we don't cut diagonally back across the
+  # table footprint. Positioned over table-center-x but well north of
+  # the table footprint (y_max=0.40) and above the table top (z=0.6).
+  - { name: arc_left,    p: [1.50,  0.70,  1.2] }
+  - { name: hover,       p: [1.525, -0.615, 1.0],  yaw:  0.0,    t: 43.0 }
+  - { name: hover_hold,  p: [1.525, -0.615, 1.0],  yaw:  0.0,    t: 45.0 }
+
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0
+
+# Offline variant generation (consumed by falsify-perturb-course, NOT
+# the recovery MPC). Mirrors the single-gate courses' block.
+trajectory_perturbations:
+  radius_m: 0.05
+  exclude_waypoints: []
+  samples: 50
+  seed: 0

@@ -238,6 +238,52 @@ def test_miss_gate_goal_not_reached_emits_transit_time():
     assert v.extra.get("transit_time") == 1.0
 
 
+def test_miss_gate_wrong_direction_aperture_fires_immediate_miss_gate():
+    """Drone approaches gate from -y side (expected dir +y), arcs
+    around the aperture to +y, then comes back through INSIDE the
+    aperture in -y direction. Must fire MISS_GATE
+    wrong_direction_aperture even in eval_stop_mode."""
+    g = _graph_ned_only()
+    g.register_frame(MOCAP)
+    g.register_edge(SE3.identity(NED, MOCAP))
+    crit = MissGateCriterion(
+        _square_aperture_mocap(), frame_name="mocap",
+        eval_stop_mode=True,
+    )
+    # First state on -y side → expected_dir_sign = +1.
+    assert crit.check_with_graph(_state(pos=(0, -1, 3.0), frame=MOCAP), g) is None
+    # Arc around above the aperture to +y (crosses plane OUTSIDE).
+    assert crit.check_with_graph(_state(pos=(0, +1, 3.0), frame=MOCAP), g) is None
+    assert crit._transited is False
+    # Now come back through INSIDE the aperture (linear interpolation
+    # from (0, +1, 3.0) to (0, -1, 0.5) crosses y=0 at z=1.75, well
+    # inside hv=0.4 of centre z=1.5) in the wrong direction.
+    v = crit.check_with_graph(_state(pos=(0, -1, 0.5), frame=MOCAP), g)
+    assert v is not None
+    assert v.failure_type is FailureType.MISS_GATE
+    assert v.extra.get("mode") == "wrong_direction_aperture"
+    # Signs are in the criterion's plane convention (n derived from
+    # u × v) — what matters is they're opposite.
+    assert v.extra.get("dir_sign") == -v.extra.get("expected_dir_sign")
+
+
+def test_miss_gate_correct_direction_aperture_latches_transited_in_eval_mode():
+    """Regression: eval_stop_mode must still latch `_transited` on a
+    correct-direction aperture crossing (previously the plane-cross
+    block was gated entirely on `not eval_stop_mode`, leaving the
+    AABB-based SUCCESS gate as the only transit signal)."""
+    g = _graph_ned_only()
+    g.register_frame(MOCAP)
+    g.register_edge(SE3.identity(NED, MOCAP))
+    crit = MissGateCriterion(
+        _square_aperture_mocap(), frame_name="mocap",
+        eval_stop_mode=True,
+    )
+    assert crit.check_with_graph(_state(pos=(0, -1, 1.5), frame=MOCAP), g) is None
+    assert crit.check_with_graph(_state(pos=(0,  1, 1.5), frame=MOCAP), g) is None
+    assert crit._transited is True
+
+
 def test_miss_gate_rejects_non_rectangular_corners():
     # Parallelogram, not a rectangle: corners[3] - corners[0] = (1, 0.1, 0)
     # which is not orthogonal to corners[1] - corners[0] = (1, 0, 0).

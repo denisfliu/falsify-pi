@@ -90,6 +90,26 @@ class FailureDetector:
                     "value": violation.value,
                     "threshold": violation.threshold,
                 }
+                # Cross-criterion enrichment: any criterion that
+                # exposes a `phase_snapshot()` hook (today only
+                # OrderedMissGateCriterion) merges its current state
+                # into the record so failures from OTHER criteria
+                # (e.g. a PointCloudCollisionCriterion clip post-
+                # gate-1) carry the gate-transit info the recovery
+                # sampler needs to scope safe-history correctly.
+                # The firing violation's own extras win on key
+                # collision — they're the proximate cause.
+                for crit_other in self._criteria:
+                    snap_fn = getattr(crit_other, "phase_snapshot", None)
+                    if not callable(snap_fn):
+                        continue
+                    try:
+                        snap = snap_fn()
+                    except Exception:
+                        continue
+                    if isinstance(snap, dict):
+                        for k, v in snap.items():
+                            extra.setdefault(k, v)
                 extra.update(violation.extra)
                 rec = FailureRecord(
                     failure_type=ftype,

@@ -67,6 +67,7 @@ between v7 finetunes, or wiring a falsify-side YAML at a bridge.
 | You want to … | Skill | Status |
 |---|---|---|
 | Run a reproducible per-policy eval campaign (policy-rooted output dir + auto-emitted trajectories & outcome HTMLs); re-render viz on a historical campaign | `falsify-eval-campaign` | done |
+| Stream-sample gate perturbations and harvest MPC recovery trajectories from one (policy, scene) pair until N NPZs are saved — corrective-maneuver training data | `falsify-collect-recoveries` | done |
 
 **Stub** = the skill describes the intended interface but the underlying
 code isn't there yet. The body of each stub points to the TODO list.

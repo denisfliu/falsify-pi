@@ -300,31 +300,94 @@ def run_episode(
             seed_rng = rng if rng is not None else np.random.default_rng(0)
             history = trace.failure.safe_history
             # MissGateCriterion stamps `transit_time` into Violation.extra
-            # when GOAL_NOT_REACHED fires; the detector merges that into
-            # FailureRecord.extra. Pass it through so the sampler can scope
-            # the draw to post-transit safe states.
+            # when GOAL_NOT_REACHED fires; OrderedMissGateCriterion
+            # additionally stamps `transit_time_1` on every post-gate-1
+            # stuck / goal-reached violation. The detector merges both
+            # into FailureRecord.extra. Pass them through so the sampler
+            # can scope the draw appropriately.
             transit_time = trace.failure.extra.get("transit_time")
+            # Prefer the AABB-EXIT time over the entry time so the
+            # sampler scopes to states where the drone has actually
+            # cleared gate-1 (not mid-transit inside the AABB). Falls
+            # back to entry time if exit wasn't recorded (rare — drone
+            # got stuck inside the AABB without exiting).
+            gate_1_transit_time = (
+                trace.failure.extra.get("transit_time_1_exit")
+                or trace.failure.extra.get("transit_time_1")
+            )
+            # Compositional phase ("pre_gate_1", "between_gates",
+            # "post_gate_2") drives a few sampler overrides — e.g.
+            # COLLISION_GATE-pre_gate_1 → bias-early.
+            failure_phase_for_seed = trace.failure.extra.get("phase")
+            # Between-gates with no legitimate aperture-transit recorded
+            # means the drone clipped past gate_1 (AABB-latched but
+            # never threaded the aperture). The stuck-check still
+            # classifies it as between_gates (geographically past gate_1)
+            # but `_transit_t_1*` are null. Fall back to the plane-cross
+            # time so the seed isn't sampled from before gate_1.
+            if (failure_phase_for_seed == "between_gates"
+                    and gate_1_transit_time is None):
+                gate_1_transit_time = trace.failure.extra.get("first_plane_cross_t_1")
+            # When the failure happened BEFORE legitimately transiting
+            # the active gate but the drone has already crossed that
+            # gate's plane (clipped past outside the aperture), scope
+            # the seed sampling to BEFORE the bypass — otherwise the
+            # planner has to reverse the bypass and re-cross, which
+            # produces the "doubles back" pathology. Selects which
+            # gate's plane to use from the failure_phase.
+            pre_gate_bypass_time = None
+            if failure_phase_for_seed == "pre_gate_1":
+                pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_1")
+            elif failure_phase_for_seed == "between_gates":
+                pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_2")
             if history:
                 seed_step, seed_state = sample_recovery_seed(
                     history, trace.failure.failure_type, seed_rng,
                     transit_time=transit_time,
+                    gate_1_transit_time=gate_1_transit_time,
+                    failure_phase=failure_phase_for_seed,
+                    pre_gate_bypass_time=pre_gate_bypass_time,
                 )
             else:
                 seed_step = trace.failure.last_safe_step
                 seed_state = trace.failure.last_safe_state
+            # Diagnostic counts for the scope window the sampler actually
+            # used. n_post_transit covers the GOAL_NOT_REACHED scope;
+            # n_post_gate_1 covers the compositional post-gate-1 scope.
             n_post_transit = (
                 sum(1 for _, st in history
                     if transit_time is not None and float(st.t) >= float(transit_time))
                 if transit_time is not None else None
             )
+            n_post_gate_1 = (
+                sum(1 for _, st in history
+                    if (gate_1_transit_time is not None
+                        and float(st.t) >= float(gate_1_transit_time)))
+                if gate_1_transit_time is not None else None
+            )
             recovery_seed_info = {
                 "step": int(seed_step),
-                "bias": bias_for(trace.failure.failure_type),
+                "bias": bias_for(trace.failure.failure_type,
+                                 failure_phase=failure_phase_for_seed),
                 "n_safe": len(history),
                 "transit_time": transit_time,
+                "gate_1_transit_time": gate_1_transit_time,
+                "failure_phase": failure_phase_for_seed,
                 "n_post_transit": n_post_transit,
+                "n_post_gate_1": n_post_gate_1,
             }
-            result = planner.plan(seed_state.pos, goal)
+            # Compositional courses trim themselves when the failure's
+            # phase indicates the seed is past one of the named gates.
+            # Single-gate planners (SplatNav, etc.) that don't accept
+            # the kwarg silently fall back to the un-trimmed plan.
+            failure_phase = trace.failure.extra.get("phase")
+            try:
+                result = planner.plan(
+                    seed_state.pos, goal, failure_phase=failure_phase,
+                )
+            except TypeError:
+                # Planner doesn't accept `failure_phase` — call legacy signature.
+                result = planner.plan(seed_state.pos, goal)
             recovery_traj = result.trajectory
 
     return FalsificationEpisode(

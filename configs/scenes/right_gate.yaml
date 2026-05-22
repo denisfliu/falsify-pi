@@ -20,7 +20,7 @@ gsplat_data_cwd: ../../data/gate_scenes_export/right_scene
 # previous "approach from -x at the gate's mean y" value (-0.5, -1.15, 1.5)
 # was 1.25 m off-distribution. See left_gate.yaml for the same note.
 start_position_mocap: [0.00, 0.00, 1.50]
-goal_position_mocap:  [1.50, -1.15, 1.50]
+goal_position_mocap:  [1.525, -0.615, 1.0]   # shared "stuffed animal" hover; matches courses/through_right_gate.yaml hover waypoint
 gate_position_mocap:  [0.54, -1.15, 1.50]
 
 start_randomization:

@@ -27,9 +27,10 @@ miss_gate:
     - [0.11, -1.39, 1.95]
     - [0.47, -1.24, 1.95]
   margin_m: 0.0
-  # Hover-over-stuffed-animal goal for the right-gate scene.
-  # (scene's goal_position_mocap = [1.50, -1.15, 1.50].)
-  goal_position: [1.50, -1.15, 1.50]
+  # Shared "stuffed animal" hover across left/right/center single-gate scenes;
+  # matches courses/through_right_gate.yaml hover waypoint so the eval success
+  # criterion lines up with where the VLA was trained to fly.
+  goal_position: [1.525, -0.615, 1.0]
   # See configs/safety/center_gate.yaml + left_gate.yaml for the rationale.
   goal_tolerance_half_extents: [0.3, 0.3, 0.5]
   goal_tolerance_m: 1.50            # legacy sphere — unused when box is set

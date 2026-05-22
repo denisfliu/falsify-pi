@@ -1,0 +1,23 @@
+# Recovery config for the left_and_center compositional scene.
+# Threads BOTH gates: left first, then center, then hover.
+#
+# CoursedMpcPlanner consumes this YAML — the planner is unchanged from
+# the single-gate case because the compositional eval scenario doesn't
+# perturb gates (`configs/eval_suite/compositional.yaml`:recipe.gate_pert
+# urbation.enabled: false). That means the planner's
+# `_apply_gate_deltas_to_course` (which only knows the singular
+# `gate_region` key, not the plural `gate_regions` used by compositional
+# scenes) never fires — gate_deltas stays None, so the course is loaded
+# verbatim. If we later want gate-perturbation on compositional, extend
+# `src/falsify/recovery/coursed_mpc.py::_apply_gate_deltas_to_course` to
+# fall back to `gate_regions` (plural) and transform waypoints inside
+# whichever gate's AABB they fall in.
+
+course: configs/courses/through_left_and_center.yaml
+planner: mpc
+trigger_failure_types:
+  - MISS_GATE
+  - COLLISION_GATE
+  - COLLISION_OTHER
+  - OUT_OF_BOUNDS
+  - GOAL_NOT_REACHED

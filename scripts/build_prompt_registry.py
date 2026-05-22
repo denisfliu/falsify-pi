@@ -6,11 +6,11 @@ short-name → {task, source}. The short name is derived from the dataset
 name (stripping a leading ``synth_`` prefix). For datasets that ship
 multiple tasks, the short name gets an ``_<task_index>`` suffix.
 
-If a derived short name would collide (e.g., two datasets land on the
-same key), we fall back to ``<dataset_name>_<task_index>`` to keep
-each entry unique. Manual overrides can be added under the
-``aliases:`` block of the existing YAML and will be preserved on
-re-run.
+Identical task strings across datasets collapse to one entry: single-task
+synth datasets process first so they win the clean short names
+(``left_gate``, ``right_gate``, ``center_from_left``, ``center_from_right``);
+any other dataset contributing the same string is recorded as
+``# also matched by: <dataset>/task_<idx>`` on that entry.
 
 Run::
 
@@ -28,25 +28,13 @@ from collections import defaultdict
 from pathlib import Path
 
 
-_REAL_DATASET_RENAME = {
-    # Gate-scenes "real" tasks aren't camera-symmetric with the synth ones —
-    # they say "gate on the left/right" vs "left/right gate". The synth
-    # variants already own `left_gate` / `right_gate` short names, so we
-    # disambiguate the real ones with a `real_` prefix.
-    "gate_scenes_real_combined": "real",
-}
-
-
 def _short_name(dataset: str, task_index: int, n_tasks_in_dataset: int) -> str:
     base = dataset
-    if dataset in _REAL_DATASET_RENAME:
-        base = _REAL_DATASET_RENAME[dataset]
-    elif base.startswith("synth_"):
+    if base.startswith("synth_"):
         base = base[len("synth_"):]
     if n_tasks_in_dataset == 1:
         return base
-    # Multi-task dataset → derive a per-index suffix. Try common left/right
-    # heuristics; otherwise fall back to the numeric index.
+    # Multi-task dataset → derive a per-index suffix.
     return f"{base}_{task_index}"
 
 
@@ -60,18 +48,6 @@ def _read_tasks(jsonl_path: Path) -> list[tuple[int, str]]:
             entry = json.loads(line)
             out.append((int(entry["task_index"]), str(entry["task"])))
     return out
-
-
-def _post_disambiguate_real(name: str, task_index: int, task: str) -> str:
-    """Real dataset has two tasks (left + right). Suffix by content."""
-    if not (name == "real" or name.startswith("real_")):
-        return name
-    lower = task.lower()
-    if "left" in lower and "right" not in lower:
-        return "real_left"
-    if "right" in lower and "left" not in lower:
-        return "real_right"
-    return f"real_{task_index}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -94,21 +70,33 @@ def main(argv: list[str] | None = None) -> int:
             continue
         raw[sub.name] = _read_tasks(tasks_jsonl)
 
-    # Build short-name map, deduplicating tasks across datasets if identical.
+    # Build short-name map, deduplicating by task **string** so identical
+    # prompts across datasets land under one key. Process single-task
+    # datasets first so they win the clean short names (e.g. `left_gate`
+    # over `dagger-1_real_synth_0`); multi-task datasets fill in any
+    # leftover strings and otherwise just contribute a "also matched by"
+    # entry on the existing key.
+    ordered = sorted(
+        raw.items(),
+        key=lambda kv: (len(kv[1]) > 1, kv[0]),
+    )
     short_to_entry: dict[str, dict] = {}
+    task_to_short: dict[str, str] = {}
     duplicates: dict[str, list[str]] = defaultdict(list)
-    for dataset, tasks in raw.items():
+    for dataset, tasks in ordered:
         for task_idx, task in tasks:
-            short = _short_name(dataset, task_idx, len(tasks))
-            short = _post_disambiguate_real(short, task_idx, task)
-            if short in short_to_entry:
-                # Collision: keep the first, log the duplicate for review.
-                duplicates[short].append(f"{dataset}/task_{task_idx}")
+            if task in task_to_short:
+                duplicates[task_to_short[task]].append(f"{dataset}/task_{task_idx}")
                 continue
+            short = _short_name(dataset, task_idx, len(tasks))
+            # Should not collide given the dedup-by-string above, but guard.
+            if short in short_to_entry:
+                short = f"{dataset}_{task_idx}"
             short_to_entry[short] = {
                 "task": task,
                 "source": f"{dataset}/meta/tasks.jsonl (task_index {task_idx})",
             }
+            task_to_short[task] = short
 
     # Emit YAML — handwritten so we control formatting and key order.
     lines: list[str] = []

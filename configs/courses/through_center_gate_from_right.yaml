@@ -41,6 +41,13 @@ waypoints:
   - { name: pre_gate,    p: [2.75,  -0.75, 1.5] }
   - { name: gate,        p: [2.75, -0.25, 1.5], yaw: -1.5708 }
   - { name: post_gate,   p: [2.75, 0.23, 1.4] }
+  # arc_left forces the return spline to swing wide LEFT (+y, above the
+  # table) on the way to hover so we don't cut diagonally back across
+  # the table footprint after the north-overshoot post_gate. Mirrors
+  # the same waypoint in through_right_and_center.yaml; positioned over
+  # table-center-x but well north of the table footprint (y_max=0.40)
+  # and above the table top (z=0.6).
+  - { name: arc_left,    p: [1.50,  0.70, 1.2] }
   - { name: hover,       p: [1.525, -0.615, 1.0], yaw: 0.0, t: 28.0 }
   - { name: hover_hold,  p: [1.525, -0.615, 1.0], yaw: 0.0, t: 30.0 }
 

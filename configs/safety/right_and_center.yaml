@@ -33,7 +33,11 @@ ordered_miss_gate:
         - [3.156, -0.328, 1.875]
   margin_m: 0.0
   goal_position: [1.525, -0.615, 1.0]
-  goal_tolerance_m: 1.50            # loose post-gate hover region
+  # Box tolerance — unified with the single-gate scenes so GOAL_REACHED
+  # fires under the same geometry (drone inside `goal ± half_extents`),
+  # not the looser 1.5 m sphere that compositional originally used.
+  goal_tolerance_half_extents: [0.3, 0.3, 0.5]
+  goal_tolerance_m: 1.50            # legacy sphere — unused when box is set
   min_progress_window_s: 4.0
   min_progress_m: 0.05
   eval_stop_mode: true              # see configs/safety/left_and_center.yaml

@@ -27,32 +27,46 @@ authoring new courses (`falsify-author-waypoints`).
 
 ## Output layout — this is the contract
 
+Each campaign lives under one of two **grouping folders** inside its
+policy directory: a `sweep-NNN-<ts>[-<tag>]/` folder when run via
+`tools/run_eval_sweep.sh`, or `adhoc/` when run by a one-off
+`run_eval_campaign.py` invocation. The grouping folder keeps the
+policy dir scannable as sweep history grows.
+
 ```
 runs/eval_campaigns/
-└── <policy_id>/                            # = policy-YAML stem
-    └── run-NNN-<scenario>-<YYYYMMDD_HHMMSS>/
-        ├── campaign_summary.json           # aggregated histogram + trials list
-        ├── policy_manifest.json            # policy YAML sha, bridge id, traceability
-        ├── run_manifest.json               # CLI argv, scenario sha, git rev, started/finished
-        ├── campaign.log                    # captured stdout/stderr
-        ├── viz/
-        │   ├── trajectories.html           # 3-D rollouts, scene-edits-aware, toggleable per scene×outcome
-        │   └── outcome_charts.html         # per-scene stacked bars
-        └── <scene_key>/trial_NNN/
-            ├── episode_summary.json
-            ├── rollout_states.npz
-            ├── trial_card.json
-            ├── vla_io/                     # PiGatewayPolicy debug bundles
-            ├── recovery_trajectory.npz     # only if a recovery fired
-            └── flythrough_forward.gif      # only with --gif-trials-per-scene > 0
+└── <policy_id>/                                            # = policy-YAML stem
+    ├── sweep-NNN-<YYYYMMDD_HHMMSS>[-<tag>]/                # sweep launches
+    │   ├── sweep_manifest.json                             # cohort policies, scenarios, tag, start/finish
+    │   └── run-NNN-<scenario>-<YYYYMMDD_HHMMSS>/
+    │       ├── campaign_summary.json                       # aggregated histogram + trials list
+    │       ├── policy_manifest.json                        # policy YAML sha, bridge id, traceability
+    │       ├── run_manifest.json                           # CLI argv, scenario sha, git rev, started/finished
+    │       ├── campaign.log                                # captured stdout/stderr
+    │       ├── viz/
+    │       │   ├── trajectories.html                       # 3-D rollouts, scene-edits-aware, toggleable per scene×outcome
+    │       │   └── outcome_charts.html                     # per-scene stacked bars
+    │       └── <scene_key>/trial_NNN/
+    │           ├── episode_summary.json
+    │           ├── rollout_states.npz
+    │           ├── trial_card.json
+    │           ├── vla_io/                                 # PiGatewayPolicy debug bundles
+    │           ├── recovery_trajectory.npz                 # only if a recovery fired
+    │           └── flythrough_forward.gif                  # only with --gif-trials-per-scene > 0
+    └── adhoc/                                              # ad-hoc one-off runs (default --out)
+        └── run-NNN-<scenario>-<YYYYMMDD_HHMMSS>/...
 ```
 
 - `<policy_id>` is the **stem of the `--policy-config` YAML**, e.g.
   `nonhistory_ccvhs1do_20k`. One folder per deployed checkpoint config.
-- `NNN` auto-increments per policy from existing `run-*` siblings (zero-
-  padded). Two campaigns against the same policy in the same second land
-  in `run-001-…` and `run-002-…`.
-- Legacy campaigns (pre-2026-05-20) live under
+- **`sweep-NNN`** is shared across all policy folders in a single sweep
+  launch (so policy A's `sweep-002-…` and policy B's `sweep-002-…` are
+  cohort-paired). The number is `max(existing sweep-*) + 1` scanned
+  across every policy folder.
+- **`run-NNN`** auto-increments within its grouping folder
+  (`adhoc/` or `sweep-NNN-…/`). Sweep launches reset the per-sweep
+  counter; ad-hoc runs accumulate.
+- Legacy campaigns (pre-2026-05-21) live under
   `runs/eval_campaigns/legacy/` and are excluded from auto-numbering.
 
 ## Step 1 — Generate bundles (once per scenario)
@@ -67,7 +81,7 @@ Same scenario YAML + `master_seed` → byte-identical cards across hosts
 and runs. **Commit the bundle dir** to lock the eval source-of-truth in
 git.
 
-## Step 2 — Run the campaign
+## Step 2a — Run a one-off campaign (ad-hoc)
 
 ```bash
 bash -c 'export PI_API_KEY=...; source tools/env.sh; \
@@ -79,11 +93,36 @@ bash -c 'export PI_API_KEY=...; source tools/env.sh; \
 ```
 
 `--out` is optional — when omitted, the runner derives
-`runs/eval_campaigns/nonhistory_ccvhs1do_20k/run-NNN-pure-<ts>/` from
-the policy stem and scenario name. At end of run it auto-emits
-`viz/trajectories.html` and `viz/outcome_charts.html`. Add `--no-viz`
-to skip them (the artifacts are still on disk; you can rebuild later
-with step 4).
+`runs/eval_campaigns/<policy_id>/adhoc/run-NNN-pure-<ts>/` from the
+policy stem and scenario name (`run-NNN` auto-increments within `adhoc/`).
+At end of run it auto-emits `viz/trajectories.html` and
+`viz/outcome_charts.html`. Add `--no-viz` to skip them.
+
+## Step 2b — Run a sweep (recommended for full evals)
+
+```bash
+export PI_API_KEY=...; source tools/env.sh
+bash tools/run_eval_sweep.sh                # untagged
+bash tools/run_eval_sweep.sh --tag goal-fix # human-readable suffix on the sweep dir
+```
+
+Loops `POLICIES × SCENARIOS` (both arrays inlined at the top of the
+script — edit there to change the cohort). Picks the next available
+sweep number by scanning existing `sweep-NNN-*` dirs **across all
+listed policies** and using `max + 1` — so a single launch produces
+identically-named `sweep-NNN-<ts>[-<tag>]/` folders under each policy.
+
+The script:
+- Pre-creates each policy's sweep folder and drops a
+  `sweep_manifest.json` (cohort policies, scenarios, tag, start time).
+- Passes an explicit `--out
+  <sweep_dir>/run-NNN-<scenario>-<ts>` per campaign (`run-NNN` is per-
+  scenario position within the sweep: pure=001, gate_perturbed_small=
+  002, gate_perturbed_large=003, compositional=004).
+- Tees its own driver output to `runs/eval_campaigns/sweep_<ts>.log`
+  and `tail -f`s nicely; the per-campaign `campaign.log` is still
+  inside each run dir.
+- Patches `finished_at` into each `sweep_manifest.json` on completion.
 
 Useful flags:
 

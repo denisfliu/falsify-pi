@@ -28,7 +28,13 @@ LeRobot v2.1 dataset that downstream training consumes directly.
 - `--task "<count>:<text>"` — repeatable. The first `<count>` episodes
   (in global combined order) get the first task, the next `<count>`
   get the second, etc. Use `rest` as the last entry's count to consume
-  whatever's left.
+  whatever's left. **Identical texts across multiple `--task` specs
+  collapse to a single `task_index`** in the output — `tasks.jsonl`
+  always ends up with one row per unique string, never two rows under
+  different indices pointing at the same prompt. This is what prevents
+  the historical "doubled task indices" failure where mixing source
+  bundles that happened to share a prompt produced
+  `total_tasks: N > unique_strings`.
 - `--drop-last-pattern` — fnmatch pattern (default `*_bad_last`).
   Dirs matching this pattern have their *last* parquet (by sorted
   episode index) dropped.
@@ -136,6 +142,28 @@ you need to combine those, wrap them into a minimal LeRobot dir first
   same way it points at any other LeRobot dataset.
 - **`falsify-orchestrate-batch`** — if you need to *first* generate
   more parquets before combining.
+
+## Per-episode stats are cached
+
+LeRobot v2.1 source bundles ship `meta/episodes_stats.jsonl` with byte-
+identical schema to what `combine_lerobot` would write. When present, the
+combiner **reuses** the immutable per-episode fields (image / wrist_image
+/ 3pov_1 / state / actions / timestamp / frame_index) verbatim, and only
+re-derives the three scalars it actively renumbers (`episode_index`,
+`index`, `task_index`) in closed form. The run prints
+``[stats] reused precomputed: N  recomputed from pixels: M`` — if the
+"recomputed from pixels" count is non-zero you'll pay ~1.5 s/episode on
+those entries while the cached ones cost microseconds.
+
+The cache hole that historically dominated wall-clock was decoding 100
+PNGs per camera per episode and reducing a `(100, 256, 256, 3) float32`
+cube four times for min/max/mean/std. On a 300-episode combine this used
+to take ~7.5 minutes; with the cache it's ~25 s, dominated by parquet
+copy throughput.
+
+If a source dataset is missing `episodes_stats.jsonl` (older bundle, or
+a `_no_3pov_v3` derivative — LeRobot v3.0 replaces it with a single
+`stats.json`), the combiner falls back to recomputing for those episodes.
 
 ## Gotchas
 

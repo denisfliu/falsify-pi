@@ -30,6 +30,11 @@ from typing import Optional
 
 import numpy as np
 
+from falsify.eval.sampling import (
+    sample_gate_perturbation as _sample_gate_perturbation,
+    sample_start_mocap as _sample_start_mocap,
+    seed_for as _seed_for,
+)
 from falsify.geometry import Point
 from falsify.io import build_frame_graph, load_yaml
 
@@ -80,74 +85,6 @@ def _load_scenes(scenario: dict) -> list[SceneEntry]:
             cem_distribution=s.get("cem_distribution"),
         ))
     return out
-
-
-def _seed_for(master_seed: int, scenario_name: str, scene_key: str,
-              trial_index: int) -> int:
-    """Derive a stable per-trial seed.
-
-    Hashing ``(scenario, scene, trial_index)`` together so adding a new
-    scene or scenario can't shift the random draws of unrelated trials.
-    """
-    h = hash((master_seed, scenario_name, scene_key, trial_index))
-    # numpy Generator expects an unsigned 32/64 bit int; squeeze hash.
-    return abs(h) % (2**32)
-
-
-def _sample_start_mocap(scene_cfg: dict, rng: np.random.Generator,
-                        enabled: bool) -> list[float]:
-    nominal = np.asarray(scene_cfg["start_position_mocap"], dtype=np.float64)
-    if not enabled:
-        return nominal.tolist()
-    half = (scene_cfg.get("start_randomization") or {}).get("half_widths_mocap")
-    if not half:
-        return nominal.tolist()
-    half_arr = np.asarray(half, dtype=np.float64)
-    offset = rng.uniform(-half_arr, +half_arr)
-    return (nominal + offset).tolist()
-
-
-def _sample_gate_perturbation(
-    recipe: dict,
-    rng: np.random.Generator,
-    *,
-    scene_cfg: Optional[dict] = None,
-) -> Optional[dict]:
-    """Sample a Δxyz + Δyaw for the gate, rejecting draws that would push
-    the gate into any declared scene obstacle (`scene_cfg["obstacles"]`).
-
-    Without `scene_cfg` (legacy callers / scenes lacking `obstacles`),
-    falls back to plain uniform sampling.
-    """
-    gp = recipe.get("gate_perturbation") or {}
-    if not gp.get("enabled", False):
-        return None
-    half_xyz = list(gp.get("offset_half_widths", [0.0, 0.0, 0.0]))
-    half_yaw = float(gp.get("yaw_half_width_rad", 0.0))
-    # Pin gate_dz to 0 in the sampling envelope — gates don't levitate.
-    half_xyz[2] = 0.0
-
-    if scene_cfg is not None and (scene_cfg.get("obstacles") or []):
-        # Rejection-sample against declared obstacles. Tunables can be
-        # promoted to the recipe later if a scene needs custom tolerance.
-        from falsify.perturbations import sample_obstacle_safe_perturbation
-        dxyz, dyaw = sample_obstacle_safe_perturbation(
-            scene_cfg, half_xyz, half_yaw, rng,
-            max_tries=int(gp.get("max_tries", 200)),
-            max_growth_factor=float(gp.get("max_overlap_growth_factor", 1.5)),
-        )
-    else:
-        half_xyz_arr = np.asarray(half_xyz, dtype=np.float64)
-        dxyz = rng.uniform(low=-half_xyz_arr, high=+half_xyz_arr, size=(3,))
-        dyaw = float(rng.uniform(-half_yaw, +half_yaw))
-    dxyz = np.asarray(dxyz, dtype=np.float64)
-    dxyz[2] = 0.0   # belt-and-braces — never let z drift through
-
-    return {
-        "name": "gate_rigid_perturbation",
-        "delta_xyz": dxyz.tolist(),
-        "delta_yaw_rad": float(dyaw),
-    }
 
 
 def _theta_to_card_fields(

@@ -1,0 +1,12 @@
+# Recovery config for the right_and_center compositional scene.
+# See configs/recovery/left_and_center_mpc.yaml for the planner-side
+# rationale (singular-vs-plural gate_region note).
+
+course: configs/courses/through_right_and_center.yaml
+planner: mpc
+trigger_failure_types:
+  - MISS_GATE
+  - COLLISION_GATE
+  - COLLISION_OTHER
+  - OUT_OF_BOUNDS
+  - GOAL_NOT_REACHED

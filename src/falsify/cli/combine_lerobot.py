@@ -24,6 +24,11 @@ episodes (in the global combined order) get the first task, the next
 ``<count>`` get the second, etc. The last ``--task`` may use the literal
 ``rest`` as its count to grab whatever's left.
 
+Identical task **texts** across multiple ``--task`` specs collapse to a
+single ``task_index`` in the output. The resulting ``tasks.jsonl`` always
+has exactly one row per unique text — never two rows with the same string
+under different indices.
+
 Bad-last filtering
 ------------------
 ``--drop-last-pattern`` is an fnmatch pattern (default ``*_bad_last``).
@@ -127,12 +132,33 @@ def _parse_tasks(specs: Iterable[str]) -> list[TaskSpec]:
     return out
 
 
-def _task_index_for(global_episode: int, tasks: list[TaskSpec], total: int) -> int:
+def _canonical_task_map(tasks: list[TaskSpec]) -> dict[str, int]:
+    """Map each unique task text to a canonical index, in first-seen order.
+
+    Repeating ``--task "<count>:<same text>"`` does NOT create a new
+    task_index — both ranges land on the same canonical index. This is
+    what prevents the historical "doubled task indices" bug where two
+    --task specs with identical text wrote two distinct rows into
+    tasks.jsonl pointing at the same string.
+    """
+    out: dict[str, int] = {}
+    for t in tasks:
+        if t.text not in out:
+            out[t.text] = len(out)
+    return out
+
+
+def _task_index_for(
+    global_episode: int,
+    tasks: list[TaskSpec],
+    canonical: dict[str, int],
+    total: int,
+) -> int:
     cursor = 0
-    for i, t in enumerate(tasks):
+    for t in tasks:
         upper = total if t.count is None else cursor + t.count
         if global_episode < upper:
-            return i
+            return canonical[t.text]
         cursor = upper
     raise ValueError(f"task_index_for: episode {global_episode} fell off the end")
 
@@ -202,10 +228,8 @@ def _scalar_stats(table: pa.Table, col: str) -> dict:
 
 
 def _episode_stats(table: pa.Table) -> dict:
-    return {
-        "image":        _image_stats(table, "image"),
-        "wrist_image":  _image_stats(table, "wrist_image"),
-        "3pov_1":       _image_stats(table, "3pov_1"),
+    cols = set(table.column_names)
+    out = {
         "state":        _vec_stats(table, "state"),
         "actions":      _vec_stats(table, "actions"),
         "timestamp":    _scalar_stats(table, "timestamp"),
@@ -214,6 +238,87 @@ def _episode_stats(table: pa.Table) -> dict:
         "index":        _scalar_stats(table, "index"),
         "task_index":   _scalar_stats(table, "task_index"),
     }
+    for img_col in ("image", "wrist_image", "3pov_1"):
+        if img_col in cols:
+            out[img_col] = _image_stats(table, img_col)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Precomputed-stats reuse
+# ---------------------------------------------------------------------------
+#
+# Recomputing per-episode image stats from PNG bytes dominates the combine
+# wall-clock (~1.5 s/episode for 3-camera atomic episodes, vs ~50 ms for
+# the actual parquet copy). Every LeRobot v2.1 source dataset ships
+# ``meta/episodes_stats.jsonl`` with byte-identical schema, so when it's
+# present we reuse the immutable per-episode entries (images, state,
+# actions, timestamp, frame_index) and only re-derive the three fields we
+# actively renumber: ``episode_index``, ``index``, and ``task_index``.
+# Those are closed-form: constant scalars or arithmetic progressions.
+
+
+def _scalar_stats_constant(value: float, n: int) -> dict:
+    return {
+        "min":   [float(value)],
+        "max":   [float(value)],
+        "mean":  [float(value)],
+        "std":   [0.0],
+        "count": [int(n)],
+    }
+
+
+def _scalar_stats_arange(start: int, n: int) -> dict:
+    """Closed-form stats of the integer range [start, start+n)."""
+    if n <= 0:
+        return {"min": [0.0], "max": [0.0], "mean": [0.0], "std": [0.0], "count": [0]}
+    end = start + n - 1
+    mean = start + (n - 1) / 2.0
+    # std of {0, 1, ..., n-1} is sqrt((n^2 - 1)/12).
+    std = ((n * n - 1) / 12.0) ** 0.5
+    return {
+        "min":   [float(start)],
+        "max":   [float(end)],
+        "mean":  [float(mean)],
+        "std":   [float(std)],
+        "count": [int(n)],
+    }
+
+
+def _load_source_stats(ds_root: Path) -> list[dict] | None:
+    """Read meta/episodes_stats.jsonl; return entries indexed by parquet
+    position (i.e., sorted by episode_index), or None if the file is
+    missing. Entries are returned as raw ``stats`` dicts (the outer
+    ``episode_index`` field is dropped — we map by position, not by the
+    source's local index, because some bundles renumber that field)."""
+    p = ds_root / "meta" / "episodes_stats.jsonl"
+    if not p.is_file():
+        return None
+    entries: list[tuple[int, dict]] = []
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        e = json.loads(line)
+        entries.append((int(e["episode_index"]), e["stats"]))
+    entries.sort(key=lambda t: t[0])
+    return [stats for _, stats in entries]
+
+
+def _renumber_stats(
+    prior: dict,
+    *,
+    n_rows: int,
+    global_episode_index: int,
+    global_index_start: int,
+    task_index: int,
+) -> dict:
+    """Reuse `prior` for immutable fields; rewrite the three renumbered ones."""
+    out = dict(prior)
+    out["episode_index"] = _scalar_stats_constant(global_episode_index, n_rows)
+    out["index"]         = _scalar_stats_arange(global_index_start, n_rows)
+    out["task_index"]    = _scalar_stats_constant(task_index, n_rows)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     tasks = _parse_tasks(args.task)
+    canonical_tasks = _canonical_task_map(tasks)
     datasets = _discover_datasets(args.src)
     if not datasets:
         raise SystemExit(f"no LeRobot datasets found under {args.src}")
@@ -334,14 +440,22 @@ def main(argv: list[str] | None = None) -> int:
     episodes_jsonl: list[dict] = []
     stats_jsonl: list[dict] = []
     template = None      # cached info.json features from the first source
+    text_by_canonical = {v: k for k, v in canonical_tasks.items()}
     t0 = time.time()
+
+    # Reuse-vs-recompute counters for the closing summary.
+    n_reused = 0
+    n_recomputed = 0
 
     global_ep = 0
     for ds, keep, _bad in plan:
-        for src_parquet in keep:
+        # Try to load this source dataset's precomputed per-episode stats
+        # once; index into it by parquet position to match source ordering.
+        src_stats = _load_source_stats(ds)
+        for pos, src_parquet in enumerate(keep):
             src_table = pq.read_table(src_parquet)
             n = src_table.num_rows
-            task_index = _task_index_for(global_ep, tasks, total_kept)
+            task_index = _task_index_for(global_ep, tasks, canonical_tasks, total_kept)
             new_table = _renumber_table(
                 src_table,
                 global_episode_index=global_ep,
@@ -352,15 +466,36 @@ def main(argv: list[str] | None = None) -> int:
             out_path = out_data / f"episode_{global_ep:06d}.parquet"
             pq.write_table(new_table, out_path)
 
+            # Episode's `tasks` list carries the text matching `task_index`;
+            # look it up by canonical index (NOT by --task spec position).
             episodes_jsonl.append({
                 "episode_index": global_ep,
-                "tasks": [tasks[task_index].text],
+                "tasks": [text_by_canonical[task_index]],
                 "length": n,
             })
-            stats_jsonl.append({
-                "episode_index": global_ep,
-                "stats": _episode_stats(new_table),
-            })
+
+            # Reuse the source's precomputed stats when available; only
+            # re-derive the three fields we actually renumber. Falls back
+            # to a full recompute if the source lacks episodes_stats.jsonl
+            # (or has fewer entries than parquets — unexpected, but safe).
+            prior = (
+                src_stats[pos]
+                if src_stats is not None and pos < len(src_stats)
+                else None
+            )
+            if prior is not None:
+                stats = _renumber_stats(
+                    prior,
+                    n_rows=n,
+                    global_episode_index=global_ep,
+                    global_index_start=global_index,
+                    task_index=task_index,
+                )
+                n_reused += 1
+            else:
+                stats = _episode_stats(new_table)
+                n_recomputed += 1
+            stats_jsonl.append({"episode_index": global_ep, "stats": stats})
 
             if template is None:
                 # Pull the original info.json template once for the features block.
@@ -371,11 +506,14 @@ def main(argv: list[str] | None = None) -> int:
             global_index += n
             global_ep += 1
 
-    # Write meta files.
+    print(f"[stats] reused precomputed: {n_reused}  recomputed from pixels: {n_recomputed}")
+
+    # Write meta files. tasks.jsonl carries ONE row per unique task text,
+    # not one per --task spec (multiple specs may share a text).
     tasks_path = out_meta / "tasks.jsonl"
     with tasks_path.open("w") as f:
-        for i, t in enumerate(tasks):
-            f.write(json.dumps({"task_index": i, "task": t.text}) + "\n")
+        for text, idx in sorted(canonical_tasks.items(), key=lambda kv: kv[1]):
+            f.write(json.dumps({"task_index": idx, "task": text}) + "\n")
 
     episodes_path = out_meta / "episodes.jsonl"
     with episodes_path.open("w") as f:
@@ -394,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         "robot_type": args.robot_type,
         "total_episodes": total_kept,
         "total_frames": global_index,
-        "total_tasks": len(tasks),
+        "total_tasks": len(canonical_tasks),
         "total_videos": 0,
         "total_chunks": 1,
         "chunks_size": args.chunks_size,

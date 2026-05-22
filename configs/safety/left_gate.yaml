@@ -30,7 +30,10 @@ miss_gate:
   # The unified gate-navigation check (modes b/c/d from MissGateCriterion):
   # `goal_position` enables "reached goal without transit" + "stuck" detection.
   # In the same frame as `corners_frame` (mocap here).
-  goal_position: [1.50, 0.70, 1.50]
+  # Shared "stuffed animal" hover across left/right/center single-gate scenes;
+  # matches the courses' hover waypoint (configs/courses/through_left_gate.yaml)
+  # so the eval success criterion lines up with where the VLA was trained to fly.
+  goal_position: [1.525, -0.615, 1.0]
   # Box tolerance — preferred when set; sphere `goal_tolerance_m` below is
   # the legacy fallback (still used by the no-progress mode (b)/(d)).
   # Box dims chosen to require the drone to fly back from the gate's far

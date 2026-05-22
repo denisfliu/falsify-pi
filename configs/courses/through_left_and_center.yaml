@@ -1,0 +1,69 @@
+# Compositional recovery course: thread the LEFT gate, then the CENTER
+# duplicate, then hover over the stuffed animal. Used by the
+# left_and_center compositional scene; consumed via
+# configs/recovery/left_and_center_mpc.yaml when a falsification trial
+# on that scene fires a triggering failure type.
+#
+# Scene layout (MOCAP, post scene_edits.duplicate_aabb):
+#   gate_1 plane:           through anchor (0.861, 0.694, 0.075),
+#                           normal (0.749, 0.663, 0) — drone enters
+#                           the plane traveling roughly (-0.749, -0.663).
+#                           Yaw at gate_1 = atan2(0.663, 0.749) ≈ 0.724.
+#   gate_2 plane:           y = -0.25 (plane normal along +y), centered
+#                           at (2.75, -0.25, 1.5). Drone enters in -y.
+#                           Yaw at gate_2 = -π/2.
+#   left_table footprint:   x ∈ [1.20, 1.85], y ∈ [-0.85, 0.40],
+#                           top z ≈ 0.6 — keep the spline above z=0.7
+#                           between gate_1 and gate_2.
+#
+# Trajectory: start → approach_1 (north of left table) → gate_1 → post_gate_1
+# (between the two gates, still north) → pre_gate_2 (mirrors center course's
+# perturbation target) → gate_2 → post_gate_2 (south of center plane) →
+# hover → hover_hold. Each gate plane is crossed exactly once.
+#
+# Distinct from single-gate left courses: same gate_1 entry, but the
+# post-gate_1 segment routes east+south instead of east+south-then-hover.
+# Distinct from single-gate center courses: an extra approach + gate
+# pair pre-pended; the timing budget is widened from 30s to 45s.
+
+name: through_left_and_center
+scene: configs/scenes/left_and_center.yaml
+frame: mocap
+fps: 10
+total_time_s: 45.0
+yaw_mode: tangent
+
+waypoints:
+  # start         → identity yaw, body_x = +x_mocap
+  # approach_1    → copy of through_left_gate.yaml's `approach`
+  # gate_1        → through the left gate (yaw = atan2(0.663, 0.749))
+  # post_gate_1   → north of the table, biased toward gate_2's lane
+  # pre_gate_2    → +y side of the center gate (perturbation target)
+  # gate_2        → through the center gate (yaw = -π/2, -y traversal)
+  # post_gate_2   → south of center gate, direct curl toward hover
+  # hover         → goal
+  # hover_hold    → 2 s station-keeping
+  - { name: start,       p: [0.00,  0.00, 1.5],   yaw:  0.0,    t:  0.0 }
+  - { name: approach_1,  p: [0.45,  0.40, 1.5] }
+  - { name: gate_1,      p: [0.915, 0.75, 1.5],   yaw:  0.724  }
+  - { name: post_gate_1, p: [1.40,  1.10, 1.45] }
+  - { name: pre_gate_2,  p: [2.75,  0.25, 1.5] }
+  - { name: gate_2,      p: [2.75, -0.25, 1.5],   yaw: -1.5708 }
+  - { name: post_gate_2, p: [2.75, -0.67, 1.5] }
+  - { name: hover,       p: [1.525, -0.615, 1.0], yaw:  0.0,    t: 43.0 }
+  - { name: hover_hold,  p: [1.525, -0.615, 1.0], yaw:  0.0,    t: 45.0 }
+
+velocity_constraints:
+  max_speed_mps: 1.5
+  max_yaw_rate_rad_s: 1.0
+
+# Offline variant generation (consumed by falsify-perturb-course, NOT
+# the recovery MPC). Lets us draw N jittered copies of the spline
+# whose waypoints — except those in `exclude_waypoints` — get a random
+# 3-vector offset of radius `radius_m`. Mirrors the single-gate
+# courses' block so the perturb-course tooling Just Works on this one.
+trajectory_perturbations:
+  radius_m: 0.05
+  exclude_waypoints: []
+  samples: 50
+  seed: 0
