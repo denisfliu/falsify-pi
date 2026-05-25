@@ -51,6 +51,7 @@ src/falsify/
 │                  course, started from last_safe_state) + SplatNavPlanner
 │                  (A*+spline fallback, NED in / NED out)
 ├── perturbations/ three surfaces (action / observation / environment) + JSON manifest
+├── eval/          shared evaluation-pipeline helpers (deterministic per-trial RNG seed derivation in sampling.py)
 ├── cem/           Cross-Entropy Method falsification — GaussianBoxDistribution
 │                  over the 6-d (start_dxyz, gate_dxy, gate_dyaw) vector,
 │                  continuous cost functions per FailureType, trial-card sampler
@@ -92,15 +93,15 @@ Reproducible per-policy evaluations live in ``configs/eval_suite/``.
 Scenario YAMLs declare scenes + prompts + recipe (start jitter / gate
 perturbation bounds) + ``n_trials`` + ``master_seed``. Pipeline:
 
-1. ``scripts/generate_eval_bundles.py`` samples N **absolute** trial
+1. ``scripts/eval/generate_eval_bundles.py`` samples N **absolute** trial
    cards per (scene, trial) into ``runs/eval_bundles/<scenario>/``.
    Same scenario YAML + master_seed = byte-identical cards across
    runs, machines, and orchestrator refactors.
-2. ``scripts/run_eval_campaign.py`` loops trial cards and runs each
+2. ``scripts/eval/run_eval_campaign.py`` loops trial cards and runs each
    under a given policy, writing per-trial outputs and
    ``campaign_summary.json`` under
    ``runs/eval_campaigns/<campaign_name>/``.
-3. ``scripts/summarize_eval_campaign.py`` prints per-scenario /
+3. ``scripts/eval/summarize_eval_campaign.py`` prints per-scenario /
    cross-policy breakdowns.
 
 Shipped scenarios (Phase 1 + 2): ``pure`` (left + right + center; start
@@ -138,9 +139,10 @@ no correct crossing), the trial is classified ``MISS_GATE``. See
 
 ### v7 finetune policy preprocess
 
-Every ``configs/policies/pi_gateway/*.yaml`` for the **v7 gate-scenes
-finetunes** (`pi07_history`, `pi07_nonhistory`, `pi07_center_only`,
-`pi07_center_and_real`) must set:
+Every ``configs/policies/pi_gateway/*.yaml`` for the v7/v9 gate-scenes
+finetunes (the nine variants currently under
+``configs/policies/pi_gateway/``: ``history_h6jtbq0w_20k``,
+``nonhistory_*``, ``live_v7_nh_center``, ``nonhistory_v9_real_*``) must set:
 
 ```yaml
 image_size: 256        # resize each cam to 256x256 before sending
@@ -172,12 +174,13 @@ See `src/falsify/training/CLAUDE.md` for the contract, the parquet schema,
 and how to add a new embodiment or trajectory producer. The skills under
 `.claude/skills/falsify-*` chain the steps for higher-level workflows.
 
-Status: **v0 feature-complete.** All ten subpackages exercise end-to-end
+Status: **v0 feature-complete.** All subpackages exercise end-to-end
 through the smoke CLI (mock policy → sensor rig → policy → perturbations →
-detector → recovery → visualization). The MPC-backed integrator and concrete
-Splat-MOVER environment perturbations are deferred until the full FiGS env
-and the new gsplat asset land — both wired in behind documented seams.
-Per-package `CLAUDE.md` files document the contracts of each module.
+detector → recovery → visualization). The closed-loop FiGS dynamics
+integrator (still replay-only in `sim/`) and concrete multi-object Splat-MOVER
+environment perturbations beyond the shipped `GateRigidPerturbation` are
+deferred behind documented seams. Per-package `CLAUDE.md` files document
+the contracts of each module.
 
 ## Querying the VLA
 
@@ -220,7 +223,7 @@ the `--policy-config` YAML passed on the CLI, not of bridge state.
 Each `configs/policies/pi_gateway/<x>.yaml` carries `bridge_admin_url` +
 `bridge_policy_id`; `PiGatewayPolicy._ensure_connected` performs the
 admin swap before opening the WS. Non-2xx ⇒ the run aborts. The CLIs
-(`run_vla_episode`, `scripts/run_eval_campaign.py`) write a
+(`run_vla_episode`, `scripts/eval/run_eval_campaign.py`) write a
 `policy_manifest.json` per run capturing the YAML's sha256, the bridge
 URL, the requested `bridge_policy_id`, and the `active_policy_id` the
 bridge reported after the swap.

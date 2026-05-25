@@ -68,14 +68,31 @@ authored box bounds are respected exactly — no corner-rebracketing
 approximation. This matters when MOCAP→NS has a non-axis-aligned
 rotation: the old NS-frame AABB test was an over-approximation.
 
-Two parallel appliers keep visualisation and rendering in sync:
+Three parallel appliers keep visualisation and rendering in sync:
 
-- `apply_edits_to_arrays(means_ns, quats_wxyz, edits, fg)` — pure-numpy,
-  used by the inspector / PLY exporter / classifier tools.
+- `apply_edits_to_arrays(means_ns, quats_wxyz, edits, fg)` — pure-numpy
+  on the gsplat means/quats; used by the classifier tools and the PLY
+  exporter when working with the Gaussian cloud itself.
 - `apply_edits_to_pipeline(pipeline, edits, fg)` — mutates a loaded
   nerfstudio pipeline in place; used by `preview_scene_nsviewer` and
   the runtime `GSplatRenderer`. Returns the same mask count as the array
   applier on the same inputs (verified in tests).
+- `apply_edits_to_scene_object(object_name, points_authored, edits, fg)`
+  — the visualizer-side counterpart for *scene-object* point clouds
+  (loaded from `scene_objects:` PLYs), driven by an edit's
+  `applies_to_scene_objects` list. AABB masking is not re-applied
+  here — the whole named cloud is treated as the object.
+
+## Edit types
+
+- `RigidTransformAABB` (`type: rigid_transform_aabb`) — moves the masked
+  Gaussians in place. Output length == input length.
+- `DuplicateAABB` (`type: duplicate_aabb`) — same field shape and
+  selection semantics, but **appends** a transformed copy of the masked
+  subset instead of mutating in place, so the original *and* the moved
+  copy both end up in the scene. Used by the compositional eval scenes
+  (`left_and_center`, `right_and_center`) to add a second gate at the
+  center anchor without authoring a new gsplat asset.
 
 Tests live in `tests/test_scene_edits.py`. When changing the mask
 semantics, update **both** appliers, the dash classifier

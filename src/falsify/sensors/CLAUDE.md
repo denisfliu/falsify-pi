@@ -45,6 +45,18 @@ Keys are dotted: ``namespace.specifier``. Reserved namespaces:
 New namespaces (`lidar.`, `imu.`, `event.`, …) are introduced by adding a
 sensor class; document the schema for each new namespace here.
 
+### Always-on sensors
+
+- `StateSensor` is **always** instantiated by `build_sensor_rig`,
+  regardless of `required_modalities`. Every policy gets `state.*` for
+  free; declaring it is unnecessary.
+- `PromptSensor` writes to the dedicated `Observation.prompt` field
+  (a `str`), **not** a dotted data key. Its `keys_provided` is
+  `frozenset()`, so it doesn't participate in the single-writer /
+  coverage checks. Wire it via the factory when the policy needs a
+  task prompt; it's harmless to include even for prompt-agnostic
+  policies.
+
 ## Adding a sensor
 
 1. Subclass `Sensor`. Declare `keys_provided`. Implement `sense()`.

@@ -994,14 +994,54 @@ def main(argv: Optional[list[str]] = None) -> int:
                 plan_dt = time.time() - t_plan
 
                 # Save recovery NPZ + update episode summary.
+                # The saved trajectory is the FULL drone path: the original
+                # VLA-flown prefix (steps 0..seed_step-1 from rollout_states.npz)
+                # concatenated with the MPC-planned recovery (seed → goal).
+                # This makes the NPZ a complete start-to-goal demonstration
+                # — the prefix is real flight (so the policy can learn
+                # "everything was fine here") and the suffix is the
+                # corrective plan ("here's how to recover from this drift").
                 rt = result.trajectory
-                quats = (rt.quaternions if rt.quaternions is not None
-                         else np.tile(np.array([0., 0., 0., 1.]),
-                                      (len(rt.positions), 1)))
+                recovery_pos   = np.asarray(rt.positions, dtype=np.float64)
+                recovery_quats = (
+                    np.asarray(rt.quaternions, dtype=np.float64)
+                    if rt.quaternions is not None
+                    else np.tile(np.array([0., 0., 0., 1.]),
+                                 (len(recovery_pos), 1))
+                )
+                recovery_times = np.asarray(rt.times, dtype=np.float64)
+
+                # Load the original rollout prefix from disk.
+                rollout = np.load(trial_dir / "rollout_states.npz",
+                                  allow_pickle=True)
+                prefix_pos    = np.asarray(rollout["positions_ned"][:seed_step], dtype=np.float64)
+                prefix_times  = np.asarray(rollout["times"][:seed_step], dtype=np.float64)
+                if "quaternions_xyzw" in rollout.files:
+                    prefix_quats = np.asarray(
+                        rollout["quaternions_xyzw"][:seed_step], dtype=np.float64
+                    )
+                else:
+                    prefix_quats = np.tile(
+                        np.array([0., 0., 0., 1.]), (seed_step, 1)
+                    )
+
+                # Offset recovery times so they're continuous with the prefix.
+                # Recovery starts at the seed_state; the prefix ends just
+                # before it (step seed_step-1). The recovery's first sample
+                # IS the seed state, so it picks up exactly where the
+                # prefix left off — concat directly, no duplicate cut.
+                if prefix_times.size > 0:
+                    t_offset = float(seed_state.t)
+                    recovery_times = recovery_times + (t_offset - recovery_times[0])
+
+                full_pos    = np.concatenate([prefix_pos, recovery_pos], axis=0)
+                full_quats  = np.concatenate([prefix_quats, recovery_quats], axis=0)
+                full_times  = np.concatenate([prefix_times, recovery_times], axis=0)
+
                 traj_to_save = TrainingTrajectory(
-                    times=rt.times,
-                    positions_ned=rt.positions,
-                    quaternions_xyzw=quats,
+                    times=full_times,
+                    positions_ned=full_pos,
+                    quaternions_xyzw=full_quats,
                     prompt=prompt_text,
                     source="recovery",
                 )
@@ -1022,11 +1062,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "step": int(seed_step),
                     "t": float(seed_state.t),
                 }
-                summary_disk["recovery_info"] = result.info
+                summary_disk["recovery_info"] = {
+                    **result.info,
+                    "prefix_steps": int(prefix_pos.shape[0]),
+                    "suffix_steps": int(recovery_pos.shape[0]),
+                    "total_steps":  int(full_pos.shape[0]),
+                }
                 summary_path.write_text(json.dumps(summary_disk, indent=2))
                 recovered += 1
                 print(f"   [recovery#{recovered-1:03d}] trial_{trial_idx:03d}: "
-                      f"plan={plan_dt:.1f}s  info={result.info}")
+                      f"plan={plan_dt:.1f}s  "
+                      f"prefix={prefix_pos.shape[0]}  recovery={recovery_pos.shape[0]}  "
+                      f"info={result.info}")
             except Exception as e:  # noqa: BLE001
                 tb = traceback.format_exc()
                 (trial_dir / "phase2_error.txt").write_text(tb)

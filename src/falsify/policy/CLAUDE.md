@@ -70,13 +70,26 @@ out). Differences are in transport and configurability:
   to match. Older comments calling out 448² + "do not pre-resize"
   referred to the *server's* preprocess, which still runs on top.
 - **Cameras**: a `camera_map: {falsify_name: server_key}` block in YAML
-  decides modality→payload-key mapping; the v7 finetunes use
-  `forward → observation/image`, `downward → observation/wrist_image`
+  decides modality→payload-key mapping; the v7/v9 gate-scenes finetunes
+  use the nested-`rgb` schema —
+  `forward → observation/rgb/image`,
+  `downward → observation/wrist_image/rgb/image`
   (no 3pov channel). On connect the policy cross-checks
   `server_config.camera_names` and fails fast on mismatch.
 - **Control rate / dims**: `hz`, `state_dim`, `action_dim`,
   `action_pos_slice`, `action_yaw_index` are YAML knobs (defaults
   30 / 7 / 7 / `[0:3]` / `3`).
+- **Chunk execution + RTC**: `execute_chunk_size` (default 25) caps how
+  many actions are integrated per `infer()` query before re-querying.
+  When `use_rtc: true` (real-time-correction mode — used by the history
+  finetune YAMLs), the policy wraps `PolicyClient` in
+  `pi_inference_client.AsyncRTCPolicyRunner`, streams a denoising prefix
+  back from the server, and caps `max_n = 1` per step (the runner
+  manages chunk lifetime internally). When `false`, the policy runs in
+  plain chunk-execution mode.
+- **Sampling args**: an optional `sample_args: {...}` block in YAML is
+  forwarded verbatim to the Pi client's sampling parameters (e.g.
+  guidance scale, temperature) for the few checkpoints that read them.
 - **API key**: `${env:VAR}` indirection in YAML; source
   `tools/pi_inference_env.sh` to populate `$PI_API_KEY`.
 - **Traceability**: each variant YAML carries a `traceability:` block
@@ -102,20 +115,29 @@ To match this at inference, `PiGatewayPolicy` accepts two YAML knobs:
 | `channel_order`  | `"RGB"` (default) / `"BGR"`    | When `"BGR"`, applies `img[..., ::-1]` before sending. |
 
 Both default to "send what the renderer produced" so legacy configs are
-unaffected. **The v7 gate-scenes finetunes require both:**
+unaffected. **The v7/v9 gate-scenes finetunes require both:**
 
 ```yaml
 image_size: 256
 channel_order: "BGR"
 ```
 
-Set in all six gate-scenes YAMLs under `configs/policies/pi_gateway/`
-(history + nonhistory base + four may19 nonhistory variants).
+Set in every gate-scenes YAML under `configs/policies/pi_gateway/`
+(currently nine variants: history + nonhistory base + may19 nonhistory
++ live center + v9 real / real-synth dagger1).
 
-Debug bundles record both the native render (`rgb_<cam>.png`, what the
-renderer produced) and the post-preprocess image actually sent
-(`sent_<cam>.png`). The latter holds BGR bytes labeled RGB exactly
-matching the training PNGs.
+Debug bundles (PiGatewayPolicy): each `infer()` call writes to
+`record_dir/query_<NNNN>_step_<KKKKK>/` containing:
+- `rgb_<cam>.png` — the native render the renderer produced.
+- `sent_<cam>.png` — the post-preprocess image actually sent. Holds
+  BGR bytes labeled RGB to match the training PNGs exactly.
+- raw actions + integrated NED waypoints.
+- `data.json` — `state`, `actions_shape`, `raw_actions_shape`,
+  `use_rtc`, plus the `traceability` block copied from the YAML.
+
+(VLAPolicy's recorder writes a different on-disk layout: `obs_front.png`
+/ `obs_down.png` instead of `rgb_*`/`sent_*`, and a flat `data.txt`
+instead of `data.json`. The two recorders intentionally diverged.)
 
 ### Where the gateway runs
 

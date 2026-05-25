@@ -13,7 +13,28 @@
 - `dump_episode(episode, frame_graph, out_dir, target_frames=(...))` — nominal trajectory + recovery trajectory + start/goal/failure/last-safe markers, each emitted in every target frame.
 - `html_replay(episode, frame_graph, out_path, view_frame="ned")` — interactive plotly html.
 
-The `falsify.cli.visualize_frames` CLI composes these: it loads scene
+## Per-campaign eval reports (`eval_report.py`)
+
+Pure consumers of an on-disk campaign directory (parent of
+`<scene_key>/trial_NNN/episode_summary.json`) — no rerun, no GPU.
+Both write into `<campaign_dir>/viz/`:
+
+- `emit_trajectories_html(campaign_dir)` — single 3-D plot per
+  campaign with one scene-edits-applied context per `scene_key` plus
+  legend-grouped rollout + recovery overlays so the viewer can isolate
+  by scene × outcome.
+- `emit_outcome_charts_html(campaign_dir)` — per-scene stacked bars.
+- `emit_sweep_grid_html(campaign_dirs)` — cross-campaign grid for A/B
+  sweeps.
+
+Shared `ROLLOUT_COLOR` / `RECOVERY_COLOR` / `OUTCOME_ORDER` constants
+keep the two views visually consistent. The thin CLI
+`scripts/eval/plot_eval_run.py` wraps them so old campaigns can be
+backfilled with viz.
+
+## CLI composition
+
+The `falsify.cli.visualize_frames` CLI composes the dump_* helpers: it loads scene
 PLYs declared under `scene_objects:` in the scene YAML, converts them
 through the FrameGraph alongside a sample trajectory, and writes a
 combined `.ply` per target frame so the trajectory and scene geometry

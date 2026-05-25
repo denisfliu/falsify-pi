@@ -74,13 +74,15 @@
   handshake runs lazily inside `PiGatewayPolicy._ensure_connected` and
   includes a `/admin/switch_policy` call when the YAML names a bridge.
   Runs one episode at `--hz` with chunks of `--actions-per-chunk`
-  waypoints. Writes four bundles under `--out`:
+  waypoints. Writes the following under `--out`:
   `frames/combined_<frame>.ply` (trajectory + scene clouds),
   `flythrough.mp4` (forward-camera renders along the flown path),
-  `vla_io/query_*` (per-query VLA inputs/outputs), and — for
-  pi_gateway only — `policy_manifest.json` (YAML sha256, bridge URL,
-  requested + actual bridge_policy_id, full traceability block) so a
-  reviewer can verify which checkpoint produced the run. Use
+  `vla_io/query_*` (per-query VLA inputs/outputs),
+  `episode_summary.json` (always — outcome, timing, perturbation
+  manifest, recovery_seed metadata), and — for pi_gateway only —
+  `policy_manifest.json` (YAML sha256, bridge URL, requested + actual
+  bridge_policy_id, full traceability block) so a reviewer can verify
+  which checkpoint produced the run. Use
   `--skip-handshake` for renderer-only smoke runs. `--perturbations
   PATH` wires a `PerturbationSuite` covering all three surfaces —
   observation, action, and environment (`GateRigidPerturbation` jitters
@@ -90,7 +92,11 @@
   `episode_summary.json:perturbations` so runs are reproducible from
   YAML + `--seed`. The factory is shared with `smoke_test.py` —
   `falsify.cli.smoke_test.build_perturbations_factory`.
-- `run_falsification.py` (future) — full campaign driver.
+The "full campaign driver" lives outside `cli/` —
+`scripts/eval/run_eval_campaign.py` is the canonical entry point for
+sweeps; trial cards are generated up-front by
+`scripts/eval/generate_eval_bundles.py`. See the top-level CLAUDE.md
+"Evaluation framework" section.
 
 ## Running with the SousVide venv
 

@@ -20,22 +20,27 @@ def run_episode(
     cfg: EpisodeConfig,
     *,
     policy_factory: Callable[[Point["ned"], dict], Policy],
-    renderer: Optional[Callable] = None,
-    detector_factory: Optional[Callable[[FrameGraph, dict], FailureDetector]] = None,
-    recovery_factory: Optional[Callable[[FrameGraph, dict], SplatNavPlanner]] = None,
+    renderer: Optional[Any] = None,
+    detector_factory: Optional[Callable[[FrameGraph, dict], Any]] = None,
+    recovery_factory: Optional[Callable[[FrameGraph, dict], Any]] = None,
+    recovery_triggers: Optional[Any] = None,
+    perturbations_factory: Optional[Callable[[FrameGraph, dict], Any]] = None,
+    rng: "np.random.Generator | None" = None,
+    initial_state_override: Optional[DroneState] = None,
+    perturbation_overrides: Optional[dict] = None,
 ) -> FalsificationEpisode: ...
 ```
 
 ## What happens
 
 1. Build the `FrameGraph` from the scene YAML.
-2. Convert the start position from MOCAP to NED. Build the initial `DroneState`.
+2. Resolve the initial `DroneState`. If `initial_state_override` is set (trial-card / replay path), it is used verbatim (must be NED); otherwise the start position is read from `episode_cfg`, converted MOCAP→NED, and given zero velocity.
 3. Convert the goal from MOCAP to NED — passed into the policy factory.
 4. Construct the policy. Construct the `SensorRig` to cover its `required_modalities`.
-5. Construct the `FailureDetector` (optional) and the `SplatNavPlanner` (optional).
+5. Construct the `FailureDetector`, recovery planner, and `PerturbationSuite` from their respective factories (each optional). `perturbation_overrides` (when set) lets a trial card supply exact pre-sampled deltas instead of letting the suite resample.
 6. Build `SimulatorConfig` from `episode_cfg["hz" | "horizon_s" | "policy_hz" | "chunk_steps"]`. For VLA-style chunked rollout set `chunk_steps = actions_per_chunk` so the simulator re-queries only after a chunk is consumed.
-7. Reset the simulator. Roll out under the detector. On failure, the detector returns a `FailureRecord` with the `last_safe_state`.
-8. If recovery is wired and failure fired, the planner produces a `Trajectory[ned]` from `last_safe → goal`.
+7. Reset the simulator. Roll out under the detector. On failure, the detector returns a `FailureRecord` with both `last_safe_state` and the full `safe_history`.
+8. If recovery is wired and the failure type is in `recovery_triggers`, the orchestrator picks a seed via `sample_recovery_seed(safe_history, failure_type, rng, ...)` and the planner produces a `Trajectory[ned]` from `seed → goal`. The picked-seed metadata is persisted under `FalsificationEpisode.metadata["recovery_seed"]`.
 9. Bundle everything into a `FalsificationEpisode`.
 
 ## Why factories instead of objects

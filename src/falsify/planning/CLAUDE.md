@@ -2,8 +2,10 @@
 
 **Status:** `plan_spline` and `plan_mpc` shipped. `plan_mpc` is the
 default recovery planner used by `falsify.recovery.CoursedMpcPlanner`
-and is what every `configs/recovery/*_mpc.yaml` resolves to.
-`plan_splatnav` is still stubbed in its sibling skill doc.
+and is what every `configs/recovery/*_mpc.yaml` resolves to. A
+collision-aware `plan_splatnav` entry point is planned but does not
+yet exist in this module — the closest in-tree analogue is
+`falsify.recovery.SplatNavPlanner` (A*+spline over the gsplat).
 
 ## Workflow
 
@@ -15,7 +17,7 @@ and is what every `configs/recovery/*_mpc.yaml` resolves to.
             │
             ▼  plan_spline (default for offline data)
             ▼  plan_mpc    (default for recovery; dynamically feasible)
-            ▼  plan_splatnav (future; collision-aware)
+            ▼  plan_splatnav (future; collision-aware; not yet in planning/)
    Trajectory NPZ (NED, fps-sampled)
             │
             ▼  TrainingDataExporter

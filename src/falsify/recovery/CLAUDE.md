@@ -1,8 +1,21 @@
-# `falsify.recovery/` — SplatNav recovery planner
+# `falsify.recovery/` — recovery planners
 
 **Status:** done.
 
-## Public API
+Three planner backends ship in this subpackage. All produce a
+`RecoveryResult.trajectory` tagged `"ned"` regardless of what frame the
+underlying solver lives in:
+
+| Planner | Where | When to use |
+|---------|-------|-------------|
+| `CoursedMpcPlanner` | `coursed_mpc.py` | **Default in falsification runs.** Re-runs `planning.plan_mpc` over the same Course YAML the rollout was trying to fly, starting from the chosen `recovery_seed` state. Dynamically feasible. |
+| `SplatNavPlanner`   | `planner.py` | A*+spline (collision-aware) over the gsplat. NED in, NED out; lazily imports `splatplan`. |
+| `SplatNavMpcPlanner` | `splatnav_mpc.py` | A* (from `splatplan`) → waypoint list → `plan_mpc` tracker. Shares its loaded gsplat pipeline with the rest of the run. Used by `scripts/recovery/collect_recovery_trajectories.py`. |
+
+`CoursedMpcPlanner` is what every `configs/recovery/*_mpc.yaml` resolves to;
+`SplatNavPlanner` is the canonical fallback when no course YAML is in scope.
+
+## Public API (SplatNavPlanner)
 
 ```python
 class SplatNavPlanner:
@@ -10,9 +23,28 @@ class SplatNavPlanner:
     def plan(start: Point["ned"], goal: Point["ned"]) -> RecoveryResult: ...   # Trajectory["ned"]
 ```
 
-`RecoveryResult.trajectory.frame.name == "ned"` always — the wrapper is the
-**single** translation site that bridges public-API NED and SplatPlan's
-NS-internal frame.
+The wrapper is the **single** translation site that bridges public-API NED
+and SplatPlan's NS-internal frame.
+
+## Public API (CoursedMpcPlanner)
+
+```python
+class CoursedMpcPlanner:
+    def __init__(cfg: CoursedMpcConfig, frame_graph): ...
+    def plan(start: DroneState, goal: Optional[Point["ned"]] = None) -> RecoveryResult: ...
+```
+
+`cfg.course_yaml_path` is the course the original rollout was tracking;
+the planner re-solves the MPC with `start_state_ned` set from the recovery
+seed's `DroneState`. Returns a `Trajectory[ned]` ready for the simulator
+or training-data exporter.
+
+## Public API (SplatNavMpcPlanner)
+
+Hybrid that runs splatplan A* in NS, lifts the path back to NED, then
+hands the waypoint list to `plan_mpc` for a dynamically-feasible refit.
+Constructed in scripts that already hold a loaded gsplat pipeline so the
+30 s load isn't paid twice. See `scripts/recovery/collect_recovery_trajectories.py`.
 
 ## Frame contract
 
@@ -67,75 +99,70 @@ sample_recovery_seed(
     failure_type: Optional[FailureType],
     rng: np.random.Generator,
     *,
-    transit_time: Optional[float] = None,
+    transit_time: Optional[float] = None,           # back-compat only — no longer alters sampling
+    gate_1_transit_time: Optional[float] = None,    # back-compat only
+    failure_phase: Optional[str] = None,            # back-compat only
 ) -> tuple[int, DroneState]
 ```
+
+**Phase scoping is now the caller's responsibility.** The legacy
+`transit_time` / `gate_1_transit_time` / `failure_phase` kwargs are
+accepted for back-compat but no longer alter the draw — callers should
+pre-filter `safe_history` to the desired phase window before invoking.
 
 `safe_history` is the ordered list of `(step, DroneState)` pairs the
 `FailureDetector` saw before firing — it's published on
 `FailureRecord.safe_history`. The function returns `(step, state)` so
 callers can log which step they replanned from.
 
-### Bias / scope table
+### Bias table
 
-| Failure type                             | Scope of draw                          | Beta(α, β) | Mean idx | Why                                                          |
-|------------------------------------------|----------------------------------------|------------|----------|--------------------------------------------------------------|
-| `COLLISION_GATE`                         | full `safe_history`                    | (3, 1)     | 0.75·n   | Gate clip ⇒ approach was almost right ⇒ restart **near gate** |
-| `MISS_GATE`                              | full `safe_history`                    | (1, 3)     | 0.25·n   | Approach drifted ⇒ restart with **runway**                    |
-| `COLLISION_OTHER`                        | full `safe_history`                    | (1, 3)     | 0.25·n   | Hit something off-path ⇒ wholesale re-plan                    |
-| `OUT_OF_BOUNDS`                          | full `safe_history`                    | (1, 3)     | 0.25·n   | Diverged ⇒ wholesale re-plan                                  |
-| `GOAL_NOT_REACHED`                       | states with `state.t ≥ transit_time`   | (1, 3)     | post-transit start + 0.25·m | Drone *did* transit; replan **after the gate**, biased toward the earliest post-transit state |
-| anything else / `None`                   | full `safe_history`                    | (1, 3)     | 0.25·n   | Conservative default — only push *toward* failure when sure   |
+The function only chooses a Beta shape; the **scope** of `safe_history`
+is the caller's responsibility (see "Phase scoping" below).
 
-### `GOAL_NOT_REACHED` post-transit scoping — the long form
+| Failure type      | Beta(α, β) | Mean idx | Why                                                          |
+|-------------------|------------|----------|--------------------------------------------------------------|
+| `COLLISION_GATE`  | (3, 1)     | 0.75·n   | Gate clip ⇒ approach was almost right ⇒ restart **near gate** |
+| anything else     | (1, 3)     | 0.25·n   | Conservative default — wholesale re-plan with **runway**     |
 
-`MissGateCriterion` records `state.t` the moment `_transited` flips
-`True` (gate-plane crossing falls inside the aperture rectangle). It
-stamps that value into `Violation.extra["transit_time"]` when the
-post-transit no-progress check fires. `FailureDetector` merges
-`Violation.extra` into `FailureRecord.extra`. The orchestrator pulls
-`transit_time = trace.failure.extra.get("transit_time")` and forwards
-it to `sample_recovery_seed(transit_time=…)`.
+### Phase scoping is the caller's job
 
-The sampler then filters `safe_history` to states with
-`state.t >= transit_time` and applies Beta(1, 3) **inside that
-window**. The user's design intent: *closer emphasis on the earlier
-post-transit states* — i.e. the seed should sit just after the gate
-crossing, not deep into the post-transit hover where things had
-already gone wrong. Beta(1, 3) inside the window gives mean idx 0.25·m
-(m = post-transit count), so the expected seed is one quarter into
-the post-transit run, biased early.
+Earlier versions of `sample_recovery_seed` consulted `transit_time` /
+`gate_1_transit_time` / `failure_phase` to scope `safe_history` to a
+window (e.g. "post-gate-1 only"). That responsibility has moved to the
+caller — by the time you call the sampler, `safe_history` should already
+be filtered to the phase you want to draw from. The legacy kwargs are
+still accepted for back-compat but no longer alter sampling.
+
+`trim_tail: int = 0` is the one in-sampler scoping knob: drops the last
+`trim_tail` entries before drawing. Used by the recovery collector — the
+runtime collision criterion checks against the drone OBB only, so the
+last few "safe" entries can still be spatially right next to the
+obstacle. SplatPlan inflates Gaussians by the drone clearance radius
+when voxelising, which makes those tail entries unreachable starts.
+Trimming the tail buys the spatial margin back.
 
 **Fallbacks** (all degrade silently rather than raise):
 
 - `safe_history` empty ⇒ orchestrator skips the sampler entirely and
   uses `failure.last_safe_state` directly (failure on step 0).
 - `safe_history` singleton ⇒ that one state is returned.
-- `transit_time` not provided / failure isn't `GOAL_NOT_REACHED` ⇒
-  scoping is skipped; full history is used with the type-driven bias.
-- No safe state has `state.t >= transit_time` (failure fired
-  immediately after transit before a single safe step was recorded) ⇒
-  falls back to the full history with bias-early.
 
 ### Data flow at a glance
 
 ```
-MissGateCriterion       FailureDetector              Orchestrator                       sample_recovery_seed
-─────────────────       ───────────────              ────────────                       ────────────────────
-on transit:             on failure firing:           after rollout, if failure:         picks (step, state)
-  self._transit_t         FailureRecord(             transit_time = failure.extra        from safe_history /
-    = state.t              ...,                        .get("transit_time")               post-transit window
-                           safe_history=...,         seed_step, seed_state               with bias from table
-on stuck-after-transit:    extra={                     = sample_recovery_seed(            above
-  Violation(                 ...mode...,                  history,
-    failure_type=              transit_time:             failure_type,
-      GOAL_NOT_REACHED,        <copied from              rng,
-    extra={                    Violation.extra>          transit_time=<…>,
-      transit_time:          },                        )
-        self._transit_t,    )
-      ...,
-    },
-  )
+FailureDetector              Orchestrator                          sample_recovery_seed
+───────────────              ────────────                          ────────────────────
+on failure firing:           after rollout, if failure:            picks (step, state)
+  FailureRecord(               filter safe_history to the desired    by Beta(α, β) over
+    ...,                       phase window (e.g. post-gate-1 only)  the caller-supplied
+    safe_history=...,          seed_step, seed_state                 candidates
+    last_safe_state=...,         = sample_recovery_seed(
+  )                                filtered_history,
+                                   failure_type,
+                                   rng,
+                                   trim_tail=...,
+                                 )
 ```
 
 ### Persisted metadata

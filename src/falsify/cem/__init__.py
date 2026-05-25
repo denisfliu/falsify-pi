@@ -22,8 +22,9 @@ Module layout:
   `FailureType`, computed from each trial's ``rollout_states.npz``.
 - ``sampler.py``      — wraps a distribution to write trial-card JSON
   with the same schema ``generate_eval_bundles.py`` emits.
-- ``loop.py``         — the outer-loop driver invoked by
-  ``scripts/cem/run_cem_campaign.py``.
+
+The outer optimize loop lives in ``scripts/cem/run_cem_campaign.py``
+(function ``_run_cem_for_scene``), not in this package.
 
 Gate dz is **never** sampled (gate cannot levitate); the parameter
 vector is exactly 6-d and the bounds vector's gate-z entry is pinned
