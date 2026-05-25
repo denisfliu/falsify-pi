@@ -59,3 +59,10 @@ trajectory_perturbations:
   exclude_waypoints: []
   samples: 50
   seed: 0
+
+# Phase metadata — consumed by the recovery pipeline to classify the
+# drone's progress through the course and pick the recovery's first
+# anchor without per-task hardcoding. See src/falsify/planning/waypoints.py.
+phases:
+  - { kind: gate, index: 1, pre: approach, in: gate, post: post_gate }
+  - { kind: goal, waypoint: hover }

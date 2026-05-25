@@ -65,3 +65,10 @@ trajectory_perturbations:
   exclude_waypoints: []
   samples: 50
   seed: 0
+
+# `pre_gate` (not `approach`) is the gate-1 pre anchor — it sits
+# immediately upstream of the aperture plane, whereas `approach` is a
+# mid-route lateral nav waypoint.
+phases:
+  - { kind: gate, index: 1, pre: pre_gate, in: gate, post: post_gate }
+  - { kind: goal, waypoint: hover }

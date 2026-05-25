@@ -15,7 +15,7 @@
 # its left/right split.
 #
 # Step 2 strips the `3pov_1` column from every parquet and removes it
-# from info.json + episodes_stats.jsonl (mirrors scripts/strip_3pov.py).
+# from info.json + episodes_stats.jsonl (mirrors scripts/dataset/strip_3pov.py).
 #
 # Run from repo root:
 #   source tools/env.sh
@@ -60,7 +60,7 @@ echo "=========================================================="
 echo "[$(date +%H:%M:%S)] strip 3pov_1 → $FINAL_OUT"
 echo "=========================================================="
 PYTHONPATH=src python - <<EOF
-"""In-place port of scripts/strip_3pov.py, parameterised on src/dst."""
+"""In-place port of scripts/dataset/strip_3pov.py, parameterised on src/dst."""
 import json
 import shutil
 from pathlib import Path

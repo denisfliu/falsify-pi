@@ -318,6 +318,201 @@ def check_transit(
     )
 
 
+def _aperture_basis(corners: np.ndarray):
+    """Given 4 corners (`pre.A → pre.B → post.B → post.A` or any
+    consistent rectangle ordering), return ``(centre, u, v, n, hu, hv)``
+    matching ``MissGateCriterion``'s plane/aperture math.
+    """
+    c = np.asarray(corners, dtype=np.float64).mean(axis=0)
+    u_vec = np.asarray(corners[1], dtype=np.float64) - np.asarray(corners[0], dtype=np.float64)
+    v_vec = np.asarray(corners[3], dtype=np.float64) - np.asarray(corners[0], dtype=np.float64)
+    hu = float(np.linalg.norm(u_vec) / 2.0)
+    hv = float(np.linalg.norm(v_vec) / 2.0)
+    u = u_vec / max(np.linalg.norm(u_vec), 1e-12)
+    v = v_vec / max(np.linalg.norm(v_vec), 1e-12)
+    n = np.cross(u, v)
+    n /= max(np.linalg.norm(n), 1e-12)
+    return c, u, v, n, hu, hv
+
+
+def classify_phases_along_trajectory(
+    positions_mocap: np.ndarray,
+    apertures_mocap: list[np.ndarray],
+) -> np.ndarray:
+    """For each step, return the phase index ``k = number of apertures
+    correctly transited so far``. Returns a (N,) int array — caller
+    converts to ``PhaseLabel`` (e.g. ``Course.phase_label``).
+
+    Correct direction is inferred from the FIRST state's signed
+    distance to each aperture plane (same convention
+    ``MissGateCriterion._expected_dir_sign`` uses). A crossing inside
+    the aperture rectangle in that direction increments the count;
+    wrong-direction or out-of-aperture crossings are ignored.
+
+    ``apertures_mocap`` is a list of ``(4, 3)`` corner arrays, ordered
+    in the same sequence the drone is expected to traverse — i.e. for
+    a 2-gate compositional course, ``[gate_1_corners, gate_2_corners]``.
+    """
+    pos = np.asarray(positions_mocap, dtype=np.float64)
+    N = pos.shape[0]
+    if N == 0 or not apertures_mocap:
+        return np.zeros(N, dtype=np.int64)
+
+    # Per-aperture basis + expected direction sign (computed from pos[0]).
+    bases = []
+    for corners in apertures_mocap:
+        c, u, v, n, hu, hv = _aperture_basis(corners)
+        s0 = float(np.dot(pos[0] - c, n))
+        expected_dir = -int(np.sign(s0)) if s0 != 0.0 else +1
+        bases.append((c, u, v, n, hu, hv, expected_dir))
+
+    # Walk; track which aperture is "active" (the next one to cross). We
+    # only look for crossings of the active aperture, so out-of-order
+    # crossings (e.g. drone clipped gate 2 before crossing gate 1) don't
+    # advance the phase counter.
+    phase_at_step = np.zeros(N, dtype=np.int64)
+    active = 0   # index of next aperture to look for
+    prev = pos[0]
+    for i in range(1, N):
+        cur = pos[i]
+        if active < len(bases):
+            c, u, v, n, hu, hv, expected_dir = bases[active]
+            s_prev = float(np.dot(prev - c, n))
+            s_cur  = float(np.dot(cur - c, n))
+            if s_prev != s_cur and s_prev * s_cur <= 0.0:
+                t = s_prev / (s_prev - s_cur)
+                cross = prev + t * (cur - prev)
+                rel = cross - c
+                cu = float(np.dot(rel, u))
+                cv = float(np.dot(rel, v))
+                dir_sign = int(np.sign(s_cur - s_prev))
+                if (abs(cu) <= hu and abs(cv) <= hv
+                        and dir_sign == expected_dir):
+                    active += 1
+        phase_at_step[i] = active
+        prev = cur
+    return phase_at_step
+
+
+def apertures_from_safety_cfg(safety_cfg: dict) -> list[np.ndarray]:
+    """Return the ordered list of (4, 3) aperture corner arrays a safety
+    YAML declares. Handles both shapes: ``miss_gate:`` (single gate)
+    and ``ordered_miss_gate.gates:`` (compositional)."""
+    mg = safety_cfg.get("miss_gate")
+    if mg and mg.get("corners"):
+        return [np.asarray(mg["corners"], dtype=np.float64)]
+    omg = safety_cfg.get("ordered_miss_gate") or {}
+    out = []
+    for g in (omg.get("gates") or []):
+        out.append(np.asarray(g["corners"], dtype=np.float64))
+    return out
+
+
+@dataclass
+class CollisionSweepResult:
+    """Per-trajectory collision summary returned by ``check_collision_posthoc``.
+
+    Counts the number of steps whose drone OBB intersects the supplied
+    gate point cloud, plus the first and last colliding step indices.
+    Designed so callers can distinguish "any collision at all" (n>0)
+    from "isolated graze" (n==1) from "sustained crash" (large n).
+    """
+    n_collision_steps: int
+    first_collision_step: Optional[int]
+    last_collision_step: Optional[int]
+    max_points_hit_in_step: int
+    n_total_points_hit: int
+
+
+def check_collision_posthoc(
+    positions_mocap: np.ndarray,
+    quaternions_xyzw: np.ndarray,
+    *,
+    gate_cloud_mocap: np.ndarray,
+    drone_body: "DroneBody",
+) -> CollisionSweepResult:
+    """Walk a trajectory and tally drone-OBB intersections with a gate cloud.
+
+    Same OBB-vs-point math ``PointCloudCollisionCriterion`` runs at runtime,
+    just over a saved trajectory instead of a live state stream. Use as a
+    safety-net check after planning (warn if a planned recovery clips a
+    post) or as a post-hoc classifier override (a SUCCESS-by-AABB trial
+    that grazed a gate Gaussian should not count as a clean demo).
+
+    All inputs in MOCAP. ``drone_body`` carries the OBB half-extents and
+    body→world centre offset.
+    """
+    from .criteria import _obb_contains   # local import to avoid cycles
+    from scipy.spatial.transform import Rotation as _R   # type: ignore
+
+    N = int(positions_mocap.shape[0])
+    if N == 0 or gate_cloud_mocap.size == 0:
+        return CollisionSweepResult(0, None, None, 0, 0)
+    if quaternions_xyzw.shape[0] != N:
+        raise ValueError(
+            f"positions/quats length mismatch: {N} vs {quaternions_xyzw.shape[0]}"
+        )
+
+    radius = float(drone_body.bounding_radius)
+    half_extents = np.asarray(drone_body.half_extents, dtype=np.float64)
+    centre_offset = np.asarray(drone_body.center_offset_body, dtype=np.float64)
+    pts = np.asarray(gate_cloud_mocap, dtype=np.float64)
+
+    n_collision_steps = 0
+    first = None
+    last = None
+    max_hit = 0
+    total_hit = 0
+    for i in range(N):
+        centre = positions_mocap[i]
+        deltas = pts - centre
+        within = (deltas * deltas).sum(axis=1) <= radius * radius
+        if not np.any(within):
+            continue
+        R = _R.from_quat(quaternions_xyzw[i]).as_matrix()
+        hits = _obb_contains(
+            pts[within],
+            centre_world=centre,
+            R_world_from_body=R,
+            half_extents=half_extents,
+            centre_offset_body=centre_offset,
+        )
+        n_hit = int(np.sum(hits))
+        if n_hit == 0:
+            continue
+        n_collision_steps += 1
+        max_hit = max(max_hit, n_hit)
+        total_hit += n_hit
+        if first is None:
+            first = i
+        last = i
+    return CollisionSweepResult(
+        n_collision_steps=n_collision_steps,
+        first_collision_step=first,
+        last_collision_step=last,
+        max_points_hit_in_step=max_hit,
+        n_total_points_hit=total_hit,
+    )
+
+
+def apply_gate_deltas_to_cloud(
+    cloud_mocap: np.ndarray,
+    gate_deltas_mocap: dict,
+) -> np.ndarray:
+    """Rigid-transform a (N, 3) MOCAP point cloud by ``gate_deltas_mocap``.
+
+    Convention matches ``GateRigidPerturbation._build_edit`` and
+    ``apply_gate_deltas_to_course``: rotate by ``delta_yaw_rad`` about the
+    z-axis through ``anchor_mocap``, then translate by ``delta_xyz_mocap``.
+    """
+    anchor = np.asarray(gate_deltas_mocap["anchor_mocap"], dtype=np.float64)
+    dxyz   = np.asarray(gate_deltas_mocap["delta_xyz_mocap"], dtype=np.float64)
+    dyaw   = float(gate_deltas_mocap["delta_yaw_rad"])
+    c, s = np.cos(dyaw), np.sin(dyaw)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    return (cloud_mocap - anchor) @ R.T + anchor + dxyz
+
+
 def classify_trajectory_posthoc(
     *,
     positions_mocap: np.ndarray,

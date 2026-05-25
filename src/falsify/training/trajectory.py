@@ -25,7 +25,7 @@ Trajectory. Used by VLA rollouts.
 
 ``from_vla_run_dir(run_dir, chunk_steps=50)`` — parse an existing
 ``runs/vla_<stamp>/vla_io/`` directory by stitching its recorded chunks
-the way the simulator did. Generalises ``scripts/replay_renders.py``.
+the way the simulator did. Generalises ``scripts/debug/replay_renders.py``.
 
 Resampling
 ----------

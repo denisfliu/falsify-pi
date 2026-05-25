@@ -389,7 +389,7 @@ See `pi_local_bridge/README.md` for the rationale.
 - **From falsify**: each `configs/policies/pi_gateway/*.yaml` carries
   `gateway_url`, `bridge_admin_url`, and `bridge_policy_id`. Run
   `falsify.cli.run_vla_episode --policy-config <yaml>` or
-  `scripts/run_eval_campaign.py --policy-config <yaml>` — the policy
+  `scripts/eval/run_eval_campaign.py --policy-config <yaml>` — the policy
   handshakes the bridge automatically and writes a
   `policy_manifest.json` next to each run.
 - **From a raw script**: `pi_local_bridge/scripts/smoke_client.py` is

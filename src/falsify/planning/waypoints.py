@@ -40,10 +40,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import numpy as np
 import yaml
+
+
+# Phase identity: ("pre_gate", k) or ("post_gate", k). 1-based gate index.
+# Used by the recovery pipeline to scope safe-state sampling and pick the
+# recovery course's first anchor without per-task hardcoding.
+PhaseLabel = tuple[Literal["pre_gate", "post_gate"], int]
+
+
+@dataclass(frozen=True)
+class GatePhase:
+    """A gate phase declaration. Names existing waypoints by name; the
+    loader validates that each referenced waypoint exists in the
+    course's ``waypoints`` list."""
+    index: int        # 1-based gate index, contiguous from 1
+    pre: str          # approach waypoint name
+    in_: str          # in-aperture waypoint name (Python `in` is reserved)
+    post: str         # past-the-gate waypoint name
+
+
+@dataclass(frozen=True)
+class GoalPhase:
+    """The terminal phase. Drone hovers / parks on ``waypoint``."""
+    waypoint: str
+
+
+Phase = Union[GatePhase, GoalPhase]
 
 
 @dataclass(frozen=True)
@@ -126,6 +152,12 @@ class Course:
     notes: str = ""
     corrective_perturbations: Optional[CorrectivePerturbation] = None
     trajectory_perturbations: Optional[TrajectoryPerturbation] = None
+    # Phase metadata — the recovery pipeline reads this to classify the
+    # drone's progress along the course (N-gate-generic) and to slice
+    # the course's waypoint suffix for replan. Tuple of GatePhase /
+    # GoalPhase. Empty tuple means "no phase info" — legacy courses that
+    # the recovery pipeline can't use.
+    phases: tuple = ()
 
     def __post_init__(self):
         if len(self.waypoints) < 2:
@@ -139,6 +171,120 @@ class Course:
                 f"course {self.name!r} waypoint ``t`` values must be strictly "
                 f"increasing where present"
             )
+        if self.phases:
+            self._validate_phases()
+
+    # ---- phase metadata helpers --------------------------------------
+
+    def _validate_phases(self) -> None:
+        """Loader-time invariants for the ``phases`` block.
+
+        - Every referenced waypoint name must exist in ``waypoints``.
+        - GatePhase indices must be contiguous from 1.
+        - Exactly one GoalPhase, last in the list.
+        """
+        wp_names = {wp.name for wp in self.waypoints}
+        gate_phases = [p for p in self.phases if isinstance(p, GatePhase)]
+        goal_phases = [p for p in self.phases if isinstance(p, GoalPhase)]
+        if len(goal_phases) != 1:
+            raise ValueError(
+                f"course {self.name!r} must declare exactly one GoalPhase; "
+                f"got {len(goal_phases)}"
+            )
+        if not isinstance(self.phases[-1], GoalPhase):
+            raise ValueError(
+                f"course {self.name!r}: GoalPhase must be the last phase"
+            )
+        for i, gp in enumerate(gate_phases, start=1):
+            if gp.index != i:
+                raise ValueError(
+                    f"course {self.name!r}: gate indices must be contiguous "
+                    f"from 1; got phase #{i} with index={gp.index}"
+                )
+            for slot, name in (("pre", gp.pre), ("in", gp.in_), ("post", gp.post)):
+                if name not in wp_names:
+                    raise ValueError(
+                        f"course {self.name!r}: gate_{gp.index}.{slot} references "
+                        f"unknown waypoint {name!r}"
+                    )
+        if goal_phases[0].waypoint not in wp_names:
+            raise ValueError(
+                f"course {self.name!r}: GoalPhase.waypoint {goal_phases[0].waypoint!r} "
+                f"not found in waypoints"
+            )
+
+    @property
+    def n_gates(self) -> int:
+        return sum(1 for p in self.phases if isinstance(p, GatePhase))
+
+    def gate(self, idx: int) -> GatePhase:
+        """1-based gate access. Raises if idx out of range."""
+        for p in self.phases:
+            if isinstance(p, GatePhase) and p.index == idx:
+                return p
+        raise IndexError(
+            f"course {self.name!r}: no gate with index {idx} "
+            f"(have {self.n_gates})"
+        )
+
+    def goal(self) -> "GoalPhase":
+        for p in self.phases:
+            if isinstance(p, GoalPhase):
+                return p
+        raise ValueError(f"course {self.name!r}: no GoalPhase declared")
+
+    def waypoint_index(self, name: str) -> int:
+        """Index of the waypoint by name. Raises KeyError if not found."""
+        for i, wp in enumerate(self.waypoints):
+            if wp.name == name:
+                return i
+        raise KeyError(
+            f"course {self.name!r}: waypoint {name!r} not found"
+        )
+
+    def phase_label(self, n_crossings: int) -> PhaseLabel:
+        """Map a count of correct-direction aperture crossings to the
+        current phase. ``n_crossings`` clamped to ``[0, n_gates]``.
+
+        - 0 crossings ⇒ ``("pre_gate", 1)``
+        - k crossings, k < N ⇒ ``("post_gate", k)`` (= about to enter gate k+1)
+        - N crossings ⇒ ``("post_gate", N)`` (terminal phase, only goal left)
+        """
+        N = self.n_gates
+        if N == 0:
+            raise ValueError(f"course {self.name!r}: no gates declared")
+        k = max(0, min(int(n_crossings), N))
+        if k == 0:
+            return ("pre_gate", 1)
+        return ("post_gate", k)
+
+    def target_waypoint(self, post_phase: PhaseLabel, seed_kind: str) -> str:
+        """Pick the recovery's first anchor (the ``target`` waypoint)
+        given the current phase and the seed's nature.
+
+        ``seed_kind`` ∈ {"in_gate", "pre_gate"}:
+        - "in_gate" (collisions, or Case A trim-regressed-across-boundary)
+            push aggressively to the in-aperture waypoint of the next
+            gate the drone has to clear; in ``post_gate_N`` there's no
+            next gate, so the target degrades to the goal waypoint.
+        - "pre_gate" (Beta-sampled non-collision failures): restart at
+            the approach waypoint of the next gate the drone has to
+            clear; in ``post_gate_N`` similarly degrades to goal.
+        """
+        if seed_kind not in ("in_gate", "pre_gate"):
+            raise ValueError(f"unknown seed_kind {seed_kind!r}")
+        kind, k = post_phase
+        N = self.n_gates
+        if kind == "pre_gate":
+            gp = self.gate(k)
+            return gp.in_ if seed_kind == "in_gate" else gp.pre
+        elif kind == "post_gate":
+            if k >= N:
+                return self.goal().waypoint
+            gp = self.gate(k + 1)
+            return gp.in_ if seed_kind == "in_gate" else gp.pre
+        else:
+            raise ValueError(f"unknown phase kind {kind!r}")
 
     @property
     def positions(self) -> np.ndarray:
@@ -272,6 +418,17 @@ def save_course(course: Course, path: str | Path) -> Path:
             "samples": int(tp.samples),
             "seed": int(tp.seed),
         }
+    if course.phases:
+        phases_out = []
+        for p in course.phases:
+            if isinstance(p, GatePhase):
+                phases_out.append({
+                    "kind": "gate", "index": int(p.index),
+                    "pre": p.pre, "in": p.in_, "post": p.post,
+                })
+            elif isinstance(p, GoalPhase):
+                phases_out.append({"kind": "goal", "waypoint": p.waypoint})
+        cfg["phases"] = phases_out
     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
     return path
 
@@ -314,6 +471,28 @@ def load_course(path: str | Path) -> Course:
             samples=int(tp_cfg.get("samples", 1)),
             seed=int(tp_cfg.get("seed", 0)),
         )
+    # Phase metadata is optional — courses authored before the recovery
+    # refactor have no `phases:` block and the recovery pipeline rejects
+    # them with a clear error rather than guessing.
+    phases_cfg = cfg.get("phases") or ()
+    phases: list = []
+    for p in phases_cfg:
+        kind = p.get("kind")
+        if kind == "gate":
+            phases.append(GatePhase(
+                index=int(p["index"]),
+                pre=str(p["pre"]),
+                in_=str(p["in"]),
+                post=str(p["post"]),
+            ))
+        elif kind == "goal":
+            phases.append(GoalPhase(waypoint=str(p["waypoint"])))
+        else:
+            raise ValueError(
+                f"course {cfg['name']!r}: unknown phase kind {kind!r} "
+                "(expected 'gate' or 'goal')"
+            )
+
     return Course(
         name=cfg["name"],
         frame=cfg.get("frame", "mocap"),
@@ -327,4 +506,5 @@ def load_course(path: str | Path) -> Course:
         notes=cfg.get("notes", ""),
         corrective_perturbations=corrective,
         trajectory_perturbations=trajectory,
+        phases=tuple(phases),
     )

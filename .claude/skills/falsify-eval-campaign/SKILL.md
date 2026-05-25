@@ -72,7 +72,7 @@ runs/eval_campaigns/
 ## Step 1 — Generate bundles (once per scenario)
 
 ```bash
-PYTHONPATH=src python scripts/generate_eval_bundles.py \
+PYTHONPATH=src python scripts/eval/generate_eval_bundles.py \
     --scenario configs/eval_suite/pure.yaml
 ```
 
@@ -86,7 +86,7 @@ git.
 ```bash
 bash -c 'export PI_API_KEY=...; source tools/env.sh; \
     source tools/pi_inference_env.sh; \
-    PYTHONPATH=src python scripts/run_eval_campaign.py \
+    PYTHONPATH=src python scripts/eval/run_eval_campaign.py \
         --scenario   configs/eval_suite/pure.yaml \
         --policy-config configs/policies/pi_gateway/nonhistory_ccvhs1do_20k.yaml \
         --frame      configs/frames/carl_dual.yaml'
@@ -142,7 +142,7 @@ bundle is self-describing — no `<dir>.log` siblings.
 ## Step 3 — Summarise (and compare policies)
 
 ```bash
-PYTHONPATH=src python scripts/summarize_eval_campaign.py \
+PYTHONPATH=src python scripts/eval/summarize_eval_campaign.py \
     runs/eval_campaigns/nonhistory_ccvhs1do_20k/run-001-pure-* \
     runs/eval_campaigns/history_h6jtbq0w_20k/run-001-pure-*
 ```
@@ -153,7 +153,7 @@ running the same bundles under each policy.
 ## Step 4 — Backfill / re-render viz on an existing campaign
 
 ```bash
-PYTHONPATH=src python scripts/plot_eval_run.py \
+PYTHONPATH=src python scripts/eval/plot_eval_run.py \
     runs/eval_campaigns/<policy_id>/run-NNN-<scenario>-<ts>
 ```
 
@@ -229,8 +229,8 @@ traceability (variant + W&B run + step) pulled from
 - `configs/eval_suite/README.md` — scenario YAML schema + post-hoc
   scoring rules.
 - `src/falsify/visualization/eval_report.py` — the two emit functions.
-- `scripts/plot_eval_run.py` — backfill / re-render CLI.
-- `scripts/run_eval_campaign.py` — the campaign loop itself.
+- `scripts/eval/plot_eval_run.py` — backfill / re-render CLI.
+- `scripts/eval/run_eval_campaign.py` — the campaign loop itself.
 - [`falsify-infer-from-checkpoint`](../falsify-infer-from-checkpoint/SKILL.md)
   — companion skill for the `PiGatewayPolicy` config that
   `--policy-config` points at.

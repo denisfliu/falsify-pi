@@ -1,0 +1,45 @@
+# Pi inference-client gateway — pi07 NONHISTORY mode, v9 DAgger round-1
+# finetune on top of v7 real-center. Trained on real-center demos + the
+# corrective-maneuver trajectories collected from the v7 real-center
+# policy under perturbation (the first DAgger pass).
+
+type: pi_gateway
+
+gateway_url: "ws://moraband.stanford.edu:8765/v1/models/v9-nonhistory-real-center-dagger1"
+api_key:     "${env:PI_API_KEY}"
+
+# Multi-policy bridge handshake — see history_h6jtbq0w_20k.yaml for the
+# contract. `bridge_policy_id` must match the registry entry on the
+# bridge YAML.
+bridge_admin_url: "http://moraband.stanford.edu:8765"
+bridge_policy_id: "v9-nonhistory-real-center-dagger1"
+
+execute_chunk_size: 25
+# No `prompt:` here — the runner injects card.prompt; see other YAMLs.
+
+hz: 30
+state_dim: 7
+action_dim: 7
+action_pos_slice: [0, 3]
+action_yaw_index: 3
+
+camera_map:
+  forward:  "observation/rgb/image"
+  downward: "observation/wrist_image/rgb/image"
+
+# Match the training-data preprocess exactly. See
+# `nonhistory_ccvhs1do_20k.yaml` for the rationale.
+image_size: 256
+channel_order: "BGR"
+
+server_frame: "mocap"
+
+traceability:
+  variant: "pi07_nonhistory_v9_real_center_dagger1"
+  wandb_run: null        # TODO: backfill from jatucker when available
+  step: null             # TODO: backfill
+  offline_mse: null
+  checkpoint_uri: null   # bridge serves from /home/jatucker/falsify_pi/pi_inference/checkpoints/pi07_nh_v9_real_center_dagger1
+  processor_name: "dronevla_v9_real_center_dagger1"
+  base_model: "gemma3_vla_with_states + NONHISTORY_LC"
+  notes: "v9 DAgger round-1 finetune of v7-nonhistory-real-center: real-center demos + recovery trajectories harvested under perturbation."

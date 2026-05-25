@@ -15,7 +15,10 @@ bridge_admin_url: "http://moraband.stanford.edu:8765"
 bridge_policy_id: "v7-nonhistory-all"
 
 execute_chunk_size: 25
-prompt: "fly through the gate"
+# No `prompt:` here. The eval campaign runner sets `cfg.prompt = card.prompt`
+# (resolved from the trial card's `prompt_name` via configs/prompts/), and
+# `run_vla_episode.py` requires `--prompt` or `--prompt-name`. A missing
+# prompt at inference time is a fast-fail in `PiGatewayPolicy.observe`.
 
 hz: 30
 state_dim: 7

@@ -14,7 +14,7 @@ bridge_admin_url: "http://moraband.stanford.edu:8765"
 bridge_policy_id: "v7-nonhistory-center"
 
 execute_chunk_size: 25
-prompt: "fly through the gate"
+# No `prompt:` here — the runner injects card.prompt; see other YAMLs.
 
 hz: 30
 state_dim: 7

@@ -185,7 +185,7 @@ n_states_inside, aabb_mocap}` dict. Outcome is one of:
 no longer appears as a distinct outcome — both mean "drone never went
 through the gate" under the post-hoc rule.
 
-The campaign runner (`scripts/run_eval_campaign.py`) writes
+The campaign runner (`scripts/eval/run_eval_campaign.py`) writes
 `posthoc_outcome` + `transited` + transit-step indices into each trial's
 `episode_summary.json` and uses `posthoc_outcome == "SUCCESS"` as the
 single source of truth for `n_succeeded` in `campaign_summary.json`.
@@ -224,7 +224,7 @@ The post-hoc classifier then:
 Scenes without the `_from_*` suffix (e.g. `left_gate`, `right_gate`)
 skip the directional check and use the legacy "any AABB touch counts
 as transit" rule. To re-apply this check to already-captured campaigns
-without re-rolling, use `scripts/reclassify_campaign.py` — it walks the
+without re-rolling, use `scripts/eval/reclassify_campaign.py` — it walks the
 trial dirs, re-classifies, and rewrites the per-trial summaries +
 `campaign_summary.json` (with `*.json.bak` backups on first run).
 

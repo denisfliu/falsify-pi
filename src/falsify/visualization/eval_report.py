@@ -12,7 +12,7 @@ Two public entry points consume a campaign dir (parent of
     visual contract of ``runs/eval_campaigns/summary_charts_20260519.html``.
 
 Both are pure consumers of the on-disk campaign artifacts — no rerun,
-no GPU. The thin CLI ``scripts/plot_eval_run.py`` wraps them so old
+no GPU. The thin CLI ``scripts/eval/plot_eval_run.py`` wraps them so old
 campaigns can be backfilled with viz.
 """
 
@@ -94,10 +94,91 @@ def _box_wireframe(center: np.ndarray, half_extents: np.ndarray):
     return _gate_aabb_wireframe(center - half_extents, center + half_extents)
 
 
+# Body-frame OBB corners as a (8, 3) array, ordered to match
+# `_gate_aabb_wireframe`'s edge table so the same edge list applies.
+def _obb_body_corners(half_extents: np.ndarray) -> np.ndarray:
+    hx, hy, hz = float(half_extents[0]), float(half_extents[1]), float(half_extents[2])
+    return np.array([
+        [-hx, -hy, -hz], [+hx, -hy, -hz], [+hx, +hy, -hz], [-hx, +hy, -hz],
+        [-hx, -hy, +hz], [+hx, -hy, +hz], [+hx, +hy, +hz], [-hx, +hy, +hz],
+    ])
+
+_OBB_EDGES = ((0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7))
+
+
+def _quat_xyzw_rotate(quats_xyzw: np.ndarray, body_pts: np.ndarray) -> np.ndarray:
+    """Rotate a fixed (M, 3) body-frame point set by N quaternions (xyzw).
+    Returns (N, M, 3). Implements ``p_world = q * p * q⁻¹`` directly.
+    """
+    q = np.asarray(quats_xyzw, dtype=np.float64)         # (N, 4)
+    p = np.asarray(body_pts, dtype=np.float64)           # (M, 3)
+    qx, qy, qz, qw = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    # Rotation matrices via the standard formula. (N, 3, 3)
+    xx, yy, zz = qx*qx, qy*qy, qz*qz
+    xy, xz, yz = qx*qy, qx*qz, qy*qz
+    wx, wy, wz = qw*qx, qw*qy, qw*qz
+    R = np.empty((q.shape[0], 3, 3), dtype=np.float64)
+    R[:, 0, 0] = 1 - 2*(yy + zz); R[:, 0, 1] = 2*(xy - wz); R[:, 0, 2] = 2*(xz + wy)
+    R[:, 1, 0] = 2*(xy + wz); R[:, 1, 1] = 1 - 2*(xx + zz); R[:, 1, 2] = 2*(yz - wx)
+    R[:, 2, 0] = 2*(xz - wy); R[:, 2, 1] = 2*(yz + wx); R[:, 2, 2] = 1 - 2*(xx + yy)
+    # (N, 3, 3) @ (M, 3).T → (N, 3, M) → (N, M, 3)
+    return (R @ p.T).transpose(0, 2, 1)
+
+
+def _drone_body_half_extents(scene_yaml: Path) -> Optional[np.ndarray]:
+    """Look up ``drone_body.half_extents`` from the scene's matching
+    safety YAML (same lookup convention as ``_safety_goal_region``)."""
+    from falsify.io import load_yaml
+    cfg = load_yaml(scene_yaml)
+    scene_key = cfg.get("scene_key") or scene_yaml.stem
+    candidate = REPO_ROOT / "configs" / "safety" / f"{scene_key}.yaml"
+    if not candidate.is_file():
+        return None
+    safety = load_yaml(candidate) or {}
+    he = (safety.get("drone_body") or {}).get("half_extents")
+    return np.asarray(he, dtype=np.float64) if he is not None else None
+
+
+def _drone_obb_lines_mocap(
+    positions_ned: np.ndarray,
+    quats_xyzw: np.ndarray,
+    half_extents_body: np.ndarray,
+    scene_yaml: Path,
+    stride: int,
+):
+    """Return (xs, ys, zs) line lists in MOCAP for one OBB every `stride`
+    rollout steps. Always includes the first and last step.
+
+    The OBB centre is the drone position; corners are the rotated
+    body-frame ±half_extents (FRD). The body→world rotation is read
+    from the rollout's xyzw quaternion, then the resulting NED points
+    are converted to MOCAP via the scene's FrameGraph.
+    """
+    N = positions_ned.shape[0]
+    if N == 0:
+        return [], [], []
+    idx = sorted(set(list(range(0, N, max(1, int(stride)))) + [N - 1]))
+    body = _obb_body_corners(half_extents_body)               # (8, 3)
+    rotated = _quat_xyzw_rotate(quats_xyzw[idx], body)        # (k, 8, 3)
+    corners_ned = rotated + positions_ned[idx, None, :]       # (k, 8, 3)
+    # NED → MOCAP per-point (perm5 is per-scene; do it via FrameGraph).
+    flat = corners_ned.reshape(-1, 3)
+    flat_mocap = _ned_to_mocap_via_scene(scene_yaml, flat)
+    corners_mocap = flat_mocap.reshape(len(idx), 8, 3)
+    xs, ys, zs = [], [], []
+    for k in range(corners_mocap.shape[0]):
+        p = corners_mocap[k]
+        for a, b in _OBB_EDGES:
+            xs.extend([p[a, 0], p[b, 0], None])
+            ys.extend([p[a, 1], p[b, 1], None])
+            zs.extend([p[a, 2], p[b, 2], None])
+    return xs, ys, zs
+
+
 def _safety_goal_region(scene_yaml: Path):
     """Return ('box', half_extents) | ('sphere', radius) | None for the
     scene's matching safety YAML. Same lookup as
-    ``scripts/plot_campaign_compare.py::_safety_goal_region_for_scene``."""
+    ``scripts/eval/plot_campaign_compare.py::_safety_goal_region_for_scene``."""
     from falsify.io import load_yaml
     cfg = load_yaml(scene_yaml)
     scene_key = cfg.get("scene_key") or scene_yaml.stem
@@ -260,19 +341,38 @@ def _draw_scene_context(fig, trials, *, max_cloud_points: int):
                 ))
 
 
-def _draw_trial_overlays(fig, trials):
+def _draw_trial_overlays(
+    fig, trials, *,
+    show_drone_obb: bool = True,
+    obb_stride: int = 25,
+    obb_half_extents: Optional[np.ndarray] = None,
+) -> list[int]:
     """Per-trial rollout polyline + start/end markers; per-trial
     recovery polyline when present; per-trial perturbed gate AABB
     when ``gate_perturbation`` is set on the trial.
 
+    When ``show_drone_obb`` is True, also draw the drone's oriented
+    bounding box at one out of every ``obb_stride`` rollout steps
+    (always including the first and last). The body half-extents come
+    from ``obb_half_extents`` if provided, otherwise from the scene's
+    matching ``configs/safety/<scene_key>.yaml::drone_body.half_extents``.
+
+    OBB traces share each trial's rollout legendgroup so toggling an
+    outcome chip in the legend hides its OBBs too. They are hidden by
+    default (``opacity=0``); the caller is expected to wire a button
+    that restyles their opacity to make them visible. Returns the list
+    of OBB trace indices so the caller can target them.
+
     Legend groups:
-      ``<scene_key>/<outcome>``           → rollouts (one legend entry
-                                            per group; subsequent trials
-                                            ride along, showlegend=False)
+      ``<scene_key>/<outcome>``           → rollouts + OBBs (single chip)
       ``<scene_key>/recovery``            → all recoveries for the scene
       ``<scene_key>/perturbed_gates``     → all per-trial AABB wireframes
     """
     import plotly.graph_objects as go
+    obb_indices: list[int] = []
+
+    # Per-scene_key cache so we don't reload the same safety YAML 60 times.
+    he_cache: dict[str, Optional[np.ndarray]] = {}
 
     legend_seen: set[str] = set()
     for t in trials:
@@ -285,7 +385,8 @@ def _draw_trial_overlays(fig, trials):
         scene_path = REPO_ROOT / s["scene"]
         color = ROLLOUT_COLOR.get(outcome, "rgb(120,120,120)")
 
-        rollout_ned = np.load(t["rollout_npz"], allow_pickle=True)["positions_ned"]
+        rollout_npz = np.load(t["rollout_npz"], allow_pickle=True)
+        rollout_ned = rollout_npz["positions_ned"]
         rollout_mocap = _ned_to_mocap_via_scene(scene_path, rollout_ned)
 
         rollout_key = f"{scene_key}/{outcome}"
@@ -373,6 +474,35 @@ def _draw_trial_overlays(fig, trials):
                 ),
             ))
 
+        # Per-trial drone OBB samples — shares the rollout's legendgroup
+        # so toggling the outcome chip hides its OBBs too. Hidden by
+        # default (opacity=0); a "Drone OBB" button wired by
+        # `emit_trajectories_html` restyles opacity to make them visible.
+        if show_drone_obb and "quaternions_xyzw" in rollout_npz.files:
+            if scene_key not in he_cache:
+                he_cache[scene_key] = (
+                    obb_half_extents if obb_half_extents is not None
+                    else _drone_body_half_extents(scene_path)
+                )
+            he = he_cache[scene_key]
+            if he is not None:
+                quats = rollout_npz["quaternions_xyzw"]
+                xs, ys, zs = _drone_obb_lines_mocap(
+                    rollout_ned, quats, he, scene_path, obb_stride,
+                )
+                fig.add_trace(go.Scatter3d(
+                    x=xs, y=ys, z=zs, mode="lines",
+                    line=dict(color=color, width=1.2),
+                    opacity=0.0,
+                    name=f"{scene_key} · drone OBB t{trial_idx:03d}",
+                    legendgroup=rollout_key, showlegend=False,
+                    hoverinfo="skip",
+                    meta={"kind": "drone_obb", "scene_key": scene_key,
+                          "trial_index": trial_idx},
+                ))
+                obb_indices.append(len(fig.data) - 1)
+    return obb_indices
+
 
 # ----------------------------- public API --------------------------------
 
@@ -381,11 +511,24 @@ def emit_trajectories_html(
     out_path: Optional[Path] = None,
     *,
     max_cloud_points: int = 4000,
+    show_drone_obb: bool = True,
+    obb_stride: int = 25,
+    obb_half_extents: Optional[np.ndarray] = None,
 ) -> Path:
     """Write a single-figure rollouts overlay for one campaign.
 
     Returns the written path. If ``out_path`` is None, writes to
     ``<campaign_dir>/viz/trajectories.html``.
+
+    When ``show_drone_obb`` is True (default), the drone's oriented
+    bounding box is emitted every ``obb_stride`` rollout steps per
+    trial. OBB traces share each rollout's legendgroup (so hiding an
+    outcome chip in the legend also hides its OBBs). A "Drone OBB"
+    toggle button is rendered in the top-right of the plot: click to
+    show, click again to hide. Hidden by default so opening the file
+    isn't visually overwhelming. Half-extents come from
+    ``obb_half_extents`` if provided, else from the per-scene safety
+    YAML's ``drone_body.half_extents``.
     """
     import plotly.graph_objects as go
 
@@ -395,7 +538,12 @@ def emit_trajectories_html(
 
     fig = go.Figure()
     _draw_scene_context(fig, trials, max_cloud_points=max_cloud_points)
-    _draw_trial_overlays(fig, trials)
+    obb_indices = _draw_trial_overlays(
+        fig, trials,
+        show_drone_obb=show_drone_obb,
+        obb_stride=obb_stride,
+        obb_half_extents=obb_half_extents,
+    )
 
     by_outcome = defaultdict(int)
     for t in trials:
@@ -423,7 +571,12 @@ def emit_trajectories_html(
             "Color = posthoc outcome (green=SUCCESS, red=COLLISION_GATE, "
             "orange=MISS_GATE). Cyan dashed = recovery trajectory "
             "(open-circle = last-safe seed). Thin colored AABB = per-trial "
-            "perturbed gate pose.</sub>"
+            "perturbed gate pose."
+            + (" Click the <b>Drone OBB</b> button (top-right) to overlay "
+               "the drone body every "
+               f"{obb_stride} steps for whichever outcomes are visible."
+               if obb_indices else "")
+            + "</sub>"
         ),
         scene=dict(
             xaxis=dict(title="mocap x (m)"),
@@ -437,6 +590,30 @@ def emit_trajectories_html(
         legend=dict(itemsizing="constant", itemclick="toggle",
                     itemdoubleclick="toggleothers"),
     )
+
+    # Drone-OBB toggle button. Plotly's restyle action with `args`/`args2`
+    # gives a two-state toggle: first click applies args (show), second
+    # click applies args2 (hide). The button targets only OBB trace
+    # indices, leaving rollout/recovery/AABB visibility under user
+    # control via the legend.
+    if obb_indices:
+        fig.update_layout(updatemenus=[dict(
+            type="buttons",
+            direction="right",
+            showactive=True,
+            buttons=[dict(
+                label="Drone OBB",
+                method="restyle",
+                args=[{"opacity": 0.55}, obb_indices],
+                args2=[{"opacity": 0.0}, obb_indices],
+            )],
+            x=1.0, xanchor="right",
+            y=1.08, yanchor="bottom",
+            pad=dict(r=4, t=2, b=2, l=4),
+            bgcolor="#f0f0f0",
+            bordercolor="#888",
+            font=dict(size=12),
+        )])
 
     out_path = out_path or (campaign_dir / "viz" / "trajectories.html")
     out_path.parent.mkdir(parents=True, exist_ok=True)

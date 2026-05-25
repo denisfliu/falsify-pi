@@ -30,7 +30,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="ws://127.0.0.1:8765/v1/models/v7-history")
     ap.add_argument("--api-key-env", default="PI_API_KEY")
-    ap.add_argument("--prompt", default="fly through the gate")
+    ap.add_argument("--prompt", required=True,
+                    help="Task prompt to send. Use a string that exists in the "
+                         "checkpoint's training data — see "
+                         "configs/prompts/atomic_dataset_prompts.yaml in falsify.")
     ap.add_argument("--n-iters", type=int, default=2,
                     help="run >1 to amortize the JAX compile cost across calls")
     args = ap.parse_args()

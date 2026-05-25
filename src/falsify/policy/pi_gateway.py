@@ -390,6 +390,16 @@ class PiGatewayPolicy(Policy):
             sent_images[cam_name] = sent
 
         prompt = obs.prompt or self.cfg.prompt
+        if not prompt:
+            raise RuntimeError(
+                "PiGatewayPolicy: empty prompt. The orchestrator must inject "
+                "a prompt via obs.prompt (resolved from a trial card's "
+                "`prompt_name` against configs/prompts/atomic_dataset_prompts"
+                ".yaml), or the caller must set PiGatewayConfig.prompt. "
+                "Refusing to send an empty robot_task_string — the policy "
+                "was trained on specific task strings and a blank prompt "
+                "would silently degrade inference."
+            )
         # Use `states=` (plural) so the state lands under the configured
         # server-side key. The default `state=` kwarg always routes to
         # `observation/joint_position`, which the v7 server doesn't accept.

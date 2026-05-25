@@ -9,7 +9,7 @@ become a primary target.
 
 ## Two-phase workflow
 
-1. **Optimize** — ``scripts/run_cem_campaign.py`` refits a truncated
+1. **Optimize** — ``scripts/cem/run_cem_campaign.py`` refits a truncated
    multivariate Gaussian over the 6-d perturbation vector to drive up a
    continuous cost for the chosen `FailureType`. Emits one
    ``converged_distribution.json`` per scene under
@@ -77,7 +77,7 @@ all three** — otherwise the A/B comparison is unfair.
 Run both arms, then:
 
 ```bash
-python scripts/summarize_eval_campaign.py \
+python scripts/eval/summarize_eval_campaign.py \
     runs/eval_campaigns/baseline_uniform_cem_box \
     runs/eval_campaigns/cem_collision_gate_exploit
 ```

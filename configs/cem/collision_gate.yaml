@@ -9,15 +9,15 @@
 # (gates that levitate, drone starts in another room, etc.).
 #
 # Pipeline:
-#   1. python scripts/run_cem_campaign.py --cem-config configs/cem/collision_gate.yaml ... \
+#   1. python scripts/cem/run_cem_campaign.py --cem-config configs/cem/collision_gate.yaml ... \
 #          --out runs/cem_campaigns/collision_gate_v0
 #      → writes runs/cem_campaigns/collision_gate_v0/<scene>/converged_distribution.json
 #
-#   2. python scripts/generate_eval_bundles.py \
+#   2. python scripts/eval/generate_eval_bundles.py \
 #          --scenario configs/eval_suite/cem_collision_gate_exploit.yaml
 #      → bundle that samples from converged_distribution.json
 #
-#   3. python scripts/run_eval_campaign.py \
+#   3. python scripts/eval/run_eval_campaign.py \
 #          --scenario configs/eval_suite/cem_collision_gate_exploit.yaml ...
 #
 #   4. Compare its campaign_summary.json against the matched-box

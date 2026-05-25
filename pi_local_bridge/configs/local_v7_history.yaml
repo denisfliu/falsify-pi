@@ -45,7 +45,7 @@ policy:
     - observation/state
   state_dims:
     observation/state: 7
-  robot_task_string: "fly through the gate"
+  robot_task_string: ""
 
 spec_overrides:
   image_preprocess:

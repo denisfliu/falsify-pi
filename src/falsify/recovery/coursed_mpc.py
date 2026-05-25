@@ -46,6 +46,119 @@ from falsify.planning import (
 from .planner import RecoveryResult
 
 
+def trim_course_to_target(course: Course, target_waypoint_name: str) -> Course:
+    """Return a copy of ``course`` whose waypoint list starts at the
+    waypoint named ``target_waypoint_name``. Drops everything earlier.
+
+    Used by the recovery pipeline after picking a target via
+    ``Course.target_waypoint(post_phase, seed_kind)``. Replaces the
+    old ``trim_course_for_phase`` + ``_PHASE_FIRST_WAYPOINT_PREFIX``
+    name-prefix table — that approach didn't generalize past the two
+    hand-coded compositional phases.
+    """
+    try:
+        idx = course.waypoint_index(target_waypoint_name)
+    except KeyError:
+        raise ValueError(
+            f"course {course.name!r}: target waypoint "
+            f"{target_waypoint_name!r} not in course"
+        )
+    if idx == 0:
+        return course
+    new_waypoints = tuple(course.waypoints[idx:])
+    print(
+        f"[course_utils] trimmed {idx} waypoint(s) before target "
+        f"{target_waypoint_name!r}"
+    )
+    return replace(course, waypoints=new_waypoints)
+
+
+def apply_gate_deltas_to_course(
+    course: Course,
+    *,
+    scene_cfg: dict,
+    gate_deltas: dict,
+    frame_graph: FrameGraph,
+) -> Course:
+    """Rigid-transform every course waypoint whose nominal MOCAP position
+    lies inside ``scene_cfg.gate_region.aabb_*`` by ``gate_deltas`` (the
+    ``{anchor_mocap, delta_xyz_mocap, delta_yaw_rad}`` shape the
+    orchestrator stamps on ``episode.metadata['gate_deltas']``). Waypoints
+    outside the AABB (start, post-gate corridor, hover) stay put."""
+    region = (scene_cfg or {}).get("gate_region")
+    if not region:
+        return course
+    if region.get("aabb_frame", "mocap") != "mocap":
+        raise NotImplementedError(
+            "apply_gate_deltas_to_course: gate_region.aabb_frame=='mocap' only"
+        )
+    aabb_min = np.asarray(region["aabb_min"], dtype=np.float64)
+    aabb_max = np.asarray(region["aabb_max"], dtype=np.float64)
+    anchor = np.asarray(gate_deltas["anchor_mocap"], dtype=np.float64)
+    dxyz = np.asarray(gate_deltas["delta_xyz_mocap"], dtype=np.float64)
+    dyaw = float(gate_deltas["delta_yaw_rad"])
+    c, s = np.cos(dyaw), np.sin(dyaw)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    new_waypoints = []
+    n_moved = 0
+    for wp in course.waypoints:
+        p_authored = np.asarray(wp.p, dtype=np.float64)
+        p_mocap = frame_graph.convert(
+            Point(p_authored, frame=frame_graph.frame(course.frame)),
+            to="mocap",
+        ).xyz
+        inside = bool(((p_mocap >= aabb_min) & (p_mocap <= aabb_max)).all())
+        if inside:
+            moved_mocap = R @ (p_mocap - anchor) + anchor + dxyz
+            moved_authored = frame_graph.convert(
+                Point(moved_mocap, frame=frame_graph.frame("mocap")),
+                to=course.frame,
+            ).xyz
+            # Yaw stays in the course's authored frame; rotate by dyaw if
+            # the waypoint has an explicit yaw — keeps gate-passage
+            # orientation consistent with the perturbed gate plane.
+            new_yaw = wp.yaw if wp.yaw is None else float(wp.yaw + dyaw)
+            new_waypoints.append(dataclasses.replace(
+                wp, p=np.asarray(moved_authored, dtype=np.float64),
+                yaw=new_yaw,
+            ))
+            n_moved += 1
+        else:
+            new_waypoints.append(wp)
+    if n_moved > 0:
+        print(f"[course_utils] applied gate_deltas to {n_moved}/"
+              f"{len(course.waypoints)} waypoints inside gate AABB")
+    return dataclasses.replace(course, waypoints=tuple(new_waypoints))
+
+
+def trim_course_for_phase(course: Course, failure_phase) -> Course:
+    """Back-compat shim — the recovery pipeline now uses
+    ``Course.target_waypoint`` + ``trim_course_to_target`` instead. Left
+    here so legacy ``CoursedMpcPlanner`` callers (still in-tree for
+    non-recovery uses) keep working. No-op."""
+    return course
+
+
+def replace_start_waypoint(
+    course: Course, start_ned: Point, frame_graph: FrameGraph,
+) -> Course:
+    """Return a copy of ``course`` whose first waypoint sits at ``start_ned``.
+    The course's authored frame may differ from NED; we convert ``start``
+    into the course's frame so the waypoint stays in the same coordinate
+    system as the rest."""
+    start_in_course_frame = frame_graph.convert(start_ned, to=course.frame).xyz
+    original_first = course.waypoints[0]
+    rewritten_first = Waypoint(
+        name=original_first.name,
+        p=np.asarray(start_in_course_frame, dtype=np.float64),
+        yaw=original_first.yaw,
+        t=original_first.t,
+    )
+    new_waypoints = (rewritten_first,) + tuple(course.waypoints[1:])
+    return replace(course, waypoints=new_waypoints)
+
+
 class CoursedMpcPlanner:
     """Recovery planner that tracks a course YAML from ``last_safe_state``."""
 
@@ -183,129 +296,18 @@ class CoursedMpcPlanner:
         return self._course
 
     def _apply_gate_deltas_to_course(self, course: Course) -> Course:
-        """Rigid-transform every waypoint that lies inside the gate's
-        MOCAP AABB by the active `gate_deltas`. Waypoints outside the
-        AABB (start, post-gate corridor, hover targets) stay put."""
-        region = (self.scene_cfg or {}).get("gate_region")
-        if not region:
-            return course
-        if region.get("aabb_frame", "mocap") != "mocap":
-            raise NotImplementedError(
-                "CoursedMpcPlanner: gate_region.aabb_frame=='mocap' only"
-            )
-        aabb_min = np.asarray(region["aabb_min"], dtype=np.float64)
-        aabb_max = np.asarray(region["aabb_max"], dtype=np.float64)
-        # Transform parameters — all MOCAP. We rotate about the anchor,
-        # then translate by delta_xyz (same convention as
-        # `GateRigidPerturbation._build_edit`).
-        anchor = np.asarray(self.gate_deltas["anchor_mocap"], dtype=np.float64)
-        dxyz = np.asarray(self.gate_deltas["delta_xyz_mocap"], dtype=np.float64)
-        dyaw = float(self.gate_deltas["delta_yaw_rad"])
-        c, s = np.cos(dyaw), np.sin(dyaw)
-        R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
-
-        # The course may be authored in a different frame; we transform
-        # waypoints in MOCAP space.
-        new_waypoints = []
-        n_moved = 0
-        for wp in course.waypoints:
-            p_authored = np.asarray(wp.p, dtype=np.float64)
-            p_mocap = self.frame_graph.convert(
-                Point(p_authored, frame=self.frame_graph.frame(course.frame)),
-                to="mocap",
-            ).xyz
-            inside = bool(((p_mocap >= aabb_min) & (p_mocap <= aabb_max)).all())
-            if inside:
-                moved_mocap = R @ (p_mocap - anchor) + anchor + dxyz
-                moved_authored = self.frame_graph.convert(
-                    Point(moved_mocap, frame=self.frame_graph.frame("mocap")),
-                    to=course.frame,
-                ).xyz
-                # Yaw stays in the same coordinate system as the original
-                # (course's authored frame). Yaw also rotates by dyaw if
-                # the waypoint has an explicit yaw — keeps the
-                # gate-passage orientation consistent with the perturbed
-                # gate plane.
-                new_yaw = wp.yaw if wp.yaw is None else float(wp.yaw + dyaw)
-                new_waypoints.append(dataclasses.replace(
-                    wp, p=np.asarray(moved_authored, dtype=np.float64),
-                    yaw=new_yaw,
-                ))
-                n_moved += 1
-            else:
-                new_waypoints.append(wp)
-        if n_moved > 0:
-            print(f"[coursed_mpc] applied gate_deltas to {n_moved}/"
-                  f"{len(course.waypoints)} waypoints inside gate AABB")
-        return dataclasses.replace(course, waypoints=tuple(new_waypoints))
-
-    # Map failure phase → name-prefix of the FIRST course waypoint we
-    # want the recovery to head toward. Convention matches the
-    # `through_{left,right}_and_center.yaml` waypoint names:
-    #
-    #   "between_gates"  ⇒ drone passed gate_1 but missed gate_2 ⇒
-    #                       jump from seed to the pre-center-gate waypoint.
-    #   "post_gate_2"    ⇒ drone passed both gates but didn't reach goal
-    #                       ⇒ jump from seed to the hover return.
-    #
-    # Single-gate courses don't carry these phases so the trim never
-    # fires for them.
-    _PHASE_FIRST_WAYPOINT_PREFIX: dict[str, str] = {
-        "between_gates": "pre_gate_2",
-        "post_gate_2": "hover",
-    }
+        return apply_gate_deltas_to_course(
+            course, scene_cfg=self.scene_cfg,
+            gate_deltas=self.gate_deltas, frame_graph=self.frame_graph,
+        )
 
     def _trim_course_for_phase(
         self, course: Course, failure_phase: Optional[str],
     ) -> Course:
-        """Drop course waypoints the seed has already passed, based on
-        the failure's compositional phase. See ``plan()``'s
-        ``failure_phase`` arg docs for the trim semantics. No-op when
-        ``failure_phase`` doesn't match a known phase OR the named
-        target waypoint isn't found in this course.
-        """
-        if failure_phase is None:
-            return course
-        target_prefix = self._PHASE_FIRST_WAYPOINT_PREFIX.get(failure_phase)
-        if target_prefix is None:
-            return course
-        # Find the first waypoint whose name starts with the target prefix.
-        keep_start_idx: Optional[int] = None
-        for i, wp in enumerate(course.waypoints):
-            if wp.name.startswith(target_prefix):
-                keep_start_idx = i
-                break
-        if keep_start_idx is None or keep_start_idx == 0:
-            # Course doesn't have the named waypoint (single-gate course
-            # got a compositional phase by accident) OR it's already
-            # waypoint 0 ⇒ nothing to trim.
-            return course
-        new_waypoints = tuple(course.waypoints[keep_start_idx:])
-        print(
-            f"[coursed_mpc] failure_phase={failure_phase!r}: trimmed "
-            f"{keep_start_idx} pre-{target_prefix} waypoint(s); "
-            f"recovery starts heading toward {new_waypoints[0].name!r}"
-        )
-        return replace(course, waypoints=new_waypoints)
+        return trim_course_for_phase(course, failure_phase)
 
     def _replace_start_waypoint(self, course: Course, start_ned: Point) -> Course:
-        """Return a copy of ``course`` whose first waypoint sits at ``start_ned``.
-
-        The course's authored frame may differ from NED; we convert
-        ``start`` into the course's frame so the waypoint stays in the
-        same coordinate system as the rest.
-        """
-        start_in_course_frame = self.frame_graph.convert(start_ned, to=course.frame).xyz
-        original_first = course.waypoints[0]
-        # Keep yaw + t (=0) from the original first waypoint — only swap pos.
-        rewritten_first = Waypoint(
-            name=original_first.name,
-            p=np.asarray(start_in_course_frame, dtype=np.float64),
-            yaw=original_first.yaw,
-            t=original_first.t,
-        )
-        new_waypoints = (rewritten_first,) + tuple(course.waypoints[1:])
-        return replace(course, waypoints=new_waypoints)
+        return replace_start_waypoint(course, start_ned, self.frame_graph)
 
     def _initial_state_from(self, course: Course, start_ned: Point) -> np.ndarray:
         """Build a 10-vector ``[px, py, pz, vx, vy, vz, qx, qy, qz, qw]`` in

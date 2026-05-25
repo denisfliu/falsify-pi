@@ -5,7 +5,7 @@ The CEM loop and the eval-suite bundle generator both need to take a 6-d
 ``run_eval_campaign.py`` consumes. This module owns that conversion in
 one place so the two callers can't drift.
 
-Trial-card schema (kept in sync with ``scripts/generate_eval_bundles.py``)::
+Trial-card schema (kept in sync with ``scripts/eval/generate_eval_bundles.py``)::
 
     {
       "scenario":            <str>,

@@ -64,6 +64,11 @@ def sample_recovery_seed(
     failure_type: Optional[FailureType],
     rng: np.random.Generator,
     *,
+    trim_tail: int = 0,
+    # The following kwargs are accepted for back-compat with older
+    # call sites; the phase-scoping responsibility has moved to the
+    # caller (orchestrator / Phase 2 collector), so these are ignored
+    # here. Will be removed once all in-tree callers are migrated.
     transit_time: Optional[float] = None,
     gate_1_transit_time: Optional[float] = None,
     failure_phase: Optional[str] = None,
@@ -122,32 +127,24 @@ def sample_recovery_seed(
     if not safe_history:
         raise ValueError("safe_history is empty — no safe seed to sample from")
 
-    # Scope precedence: GOAL_NOT_REACHED's post-transit window wins
-    # (tightest scope). Otherwise, if a gate-1 transit time is known
-    # and the failure happened post-gate-1, scope to that window. The
-    # bias selection further down doesn't change — it's applied inside
-    # whichever scope we pick.
-    #
-    # Pre-gate bypass guard: if the drone failed BEFORE legitimately
-    # transiting a gate but already crossed that gate's plane (clipped
-    # past it outside the aperture), `pre_gate_bypass_time` is the
-    # earliest time of that bypass. Scope sampling to states BEFORE
-    # the bypass so the recovery seed sits on the approach side. Without
-    # this, the seed lands past the gate and the planner has to first
-    # reverse north then re-cross south — the "doubles back" pathology.
+    # Tail trim: drop the last ``trim_tail`` entries before sampling.
+    # The runtime collision criterion uses the drone OBB, so the entries
+    # just before a collision are still "safe" by OBB-vs-points but are
+    # spatially right next to the obstacle. SplatPlan inflates each
+    # Gaussian by the drone clearance ``radius`` when building its voxel
+    # occupancy grid, so a safe state at the gate's outer halo lands in
+    # an occupied voxel and SplatPlan refuses to start. Trimming the
+    # tail buys back the spatial margin SplatPlan needs.
+    if trim_tail > 0 and len(safe_history) > trim_tail:
+        safe_history = safe_history[:-trim_tail]
+
+    # Phase scoping is now the caller's responsibility. By the time the
+    # caller hands ``safe_history`` in, it has already been filtered to
+    # entries in a single phase (e.g. the failure's post-trim phase).
+    # The historical scoping kwargs (``transit_time`` / ``gate_1_transit_time``
+    # / ``pre_gate_bypass_time``) are accepted for back-compat but no
+    # longer alter sampling.
     candidates = safe_history
-    if failure_type == FailureType.GOAL_NOT_REACHED and transit_time is not None:
-        post = [(s, st) for s, st in safe_history if float(st.t) >= float(transit_time)]
-        if post:
-            candidates = post
-    elif gate_1_transit_time is not None:
-        post = [(s, st) for s, st in safe_history if float(st.t) >= float(gate_1_transit_time)]
-        if post:
-            candidates = post
-    elif pre_gate_bypass_time is not None:
-        pre = [(s, st) for s, st in safe_history if float(st.t) < float(pre_gate_bypass_time)]
-        if pre:
-            candidates = pre
 
     if len(candidates) == 1:
         return candidates[0]

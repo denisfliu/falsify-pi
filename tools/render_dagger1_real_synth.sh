@@ -35,7 +35,7 @@ mkdir -p "$TMP/left/meta" "$TMP/right/meta"
 echo "=========================================================="
 echo "[$(date +%H:%M:%S)] Step 1a: render left_gate (50 recoveries, perturbed-gate)"
 echo "=========================================================="
-PYTHONPATH=src python scripts/render_recoveries_to_dataset.py \
+PYTHONPATH=src python scripts/recovery/render_recoveries_to_dataset.py \
     --recovery-run-dir "$LEFT_RUN" \
     --scene configs/scenes/left_gate.yaml \
     --frame configs/frames/carl_dual.yaml \
@@ -51,7 +51,7 @@ echo
 echo "=========================================================="
 echo "[$(date +%H:%M:%S)] Step 1b: render right_gate (50 recoveries, perturbed-gate)"
 echo "=========================================================="
-PYTHONPATH=src python scripts/render_recoveries_to_dataset.py \
+PYTHONPATH=src python scripts/recovery/render_recoveries_to_dataset.py \
     --recovery-run-dir "$RIGHT_RUN" \
     --scene configs/scenes/right_gate.yaml \
     --frame configs/frames/carl_dual.yaml \

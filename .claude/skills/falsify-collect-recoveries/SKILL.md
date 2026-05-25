@@ -82,7 +82,7 @@ the eval pipeline uses (`max(existing run-*) + 1`).
 
 ```bash
 bash -c 'export PI_API_KEY=...; source tools/env.sh; \
-    PYTHONPATH=src python scripts/collect_recovery_trajectories.py \
+    PYTHONPATH=src python scripts/recovery/collect_recovery_trajectories.py \
         --policy-config configs/policies/pi_gateway/nonhistory_real_synth_31ohxgxv_5000.yaml \
         --scene         configs/scenes/left_gate.yaml \
         --safety        configs/safety/left_gate.yaml \
@@ -164,7 +164,7 @@ shape changes. Per iteration:
 
 ## Reference docs
 
-- `scripts/collect_recovery_trajectories.py` — the driver.
+- `scripts/recovery/collect_recovery_trajectories.py` — the driver.
 - `src/falsify/eval/sampling.py` — the shared per-trial sampling
   helpers (`sample_gate_perturbation`, `sample_start_mocap`,
   `seed_for`).

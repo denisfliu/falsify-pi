@@ -61,7 +61,7 @@
 - **Prompt registry**: `--prompt` (literal) and `--prompt-name <short>` are
   mutually exclusive on `run_vla_episode.py`; one must be given. Short
   names come from `configs/prompts/atomic_dataset_prompts.yaml`, generated
-  by `scripts/build_prompt_registry.py` from
+  by `scripts/dataset/build_prompt_registry.py` from
   `data/atomic_datasets/*/meta/tasks.jsonl`. Keys today:
   `center_from_left`, `center_from_right`, `left_gate`, `right_gate`.
   Refresh after adding a dataset.

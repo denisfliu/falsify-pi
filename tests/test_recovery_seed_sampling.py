@@ -1,9 +1,22 @@
-"""Tests for `sample_recovery_seed` — failure-type bias + post-transit scope."""
+"""Tests for `sample_recovery_seed` — failure-type bias.
+
+Phase scoping (formerly inside the sampler, gated by ``transit_time`` /
+``gate_1_transit_time`` / ``pre_gate_bypass_time``) was moved out of the
+sampler in the phase-driven recovery refactor. Callers now pre-filter
+``safe_history`` to a single phase's entries before invoking the sampler.
+Tests that asserted the in-sampler scoping behavior are skipped — that
+contract was deliberately removed."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+
+_SCOPING_MOVED = pytest.mark.skip(
+    reason="Phase scoping moved out of sample_recovery_seed; the collector "
+           "now pre-filters safe_history by phase. See "
+           "scripts/collect_recovery_trajectories.py:Phase 2."
+)
 
 from falsify.geometry import Frame, Point
 from falsify.recovery import sample_recovery_seed
@@ -56,6 +69,7 @@ def test_bias_late_concentrates_high_indices():
     assert 65 <= np.mean(picks) <= 85
 
 
+@_SCOPING_MOVED
 def test_goal_not_reached_scopes_to_post_transit():
     """With transit_time provided, GOAL_NOT_REACHED draws only from
     safe states recorded after transit, with bias-early *within* that subset
@@ -84,7 +98,7 @@ def test_goal_not_reached_without_transit_time_falls_back_to_full_history():
     # No transit time → full history, bias-early ⇒ mean ≈ 25.
     assert 15 <= np.mean(picks) <= 35
 
-
+@_SCOPING_MOVED
 def test_goal_not_reached_no_post_transit_safe_falls_back():
     """If detector recorded zero safe states with t >= transit_time, sampler
     must not hand back an empty draw — falls back to the full history."""
@@ -97,6 +111,7 @@ def test_goal_not_reached_no_post_transit_safe_falls_back():
     assert 0 <= step < 10
 
 
+@_SCOPING_MOVED
 def test_compositional_post_gate_1_scoping():
     """With `gate_1_transit_time` set (compositional: drone cleared
     gate 1 but failed afterward), the sampler must scope its draw to
@@ -126,6 +141,7 @@ def test_compositional_post_gate_1_scoping():
     assert 56 <= np.mean(picks_early) <= 69
 
 
+@_SCOPING_MOVED
 def test_goal_not_reached_scope_wins_over_gate_1_scope():
     """When both `transit_time` (GOAL_NOT_REACHED) and `gate_1_transit_time`
     are set — e.g. compositional GOAL_NOT_REACHED after both transits —
@@ -161,6 +177,7 @@ def test_pre_gate_1_failure_uses_full_history():
     assert 15 <= np.mean(picks) <= 35
 
 
+@_SCOPING_MOVED
 def test_between_gates_first_plane_cross_fallback_scopes_post_bypass():
     """When phase==between_gates and the drone clipped past gate_1
     (AABB latched, aperture not threaded), `gate_1_transit_time` is
@@ -187,6 +204,7 @@ def test_between_gates_first_plane_cross_fallback_scopes_post_bypass():
         f"all picks must be post-bypass; saw min={min(picks)}"
 
 
+@_SCOPING_MOVED
 def test_pre_gate_bypass_time_scopes_sampling_to_pre_bypass_states():
     """When the drone failed pre-gate-1 but already crossed gate-1's
     plane (clipped outside the aperture), the sampler must scope its
@@ -209,6 +227,7 @@ def test_pre_gate_bypass_time_scopes_sampling_to_pre_bypass_states():
     assert 5 <= np.mean(picks) <= 20
 
 
+@_SCOPING_MOVED
 def test_pre_gate_bypass_scope_ignored_when_gate_1_transit_time_present():
     """If `gate_1_transit_time` is set (drone DID transit gate-1
     legitimately, then failed post-transit), the pre-gate bypass scope
@@ -229,6 +248,7 @@ def test_pre_gate_bypass_scope_ignored_when_gate_1_transit_time_present():
         f"gate_1_transit_time scope must win; saw min={min(picks)}"
 
 
+@_SCOPING_MOVED
 def test_pre_gate_bypass_empty_window_falls_back_to_full_history():
     """If no safe state is recorded BEFORE the bypass time (e.g. the
     bypass fired at step 0 with no prior safe state), the sampler must

@@ -38,3 +38,7 @@ trajectory_perturbations:
   exclude_waypoints: []
   samples: 50
   seed: 0
+
+phases:
+  - { kind: gate, index: 1, pre: approach, in: gate, post: post_gate }
+  - { kind: goal, waypoint: hover }

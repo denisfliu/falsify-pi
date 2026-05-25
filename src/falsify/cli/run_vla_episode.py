@@ -215,7 +215,7 @@ def _resolve_prompt(args: argparse.Namespace) -> str:
         raise SystemExit(
             f"--prompt-name {args.prompt_name!r} not in registry. "
             f"Known: {known}. "
-            f"Refresh with `python scripts/build_prompt_registry.py`."
+            f"Refresh with `python scripts/dataset/build_prompt_registry.py`."
         )
     entry = registry[args.prompt_name]
     return str(entry["task"]) if isinstance(entry, dict) else str(entry)
@@ -235,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                                    "configs/prompts/atomic_dataset_prompts.yaml). "
                                    "Keys come from `data/atomic_datasets/*/meta/"
                                    "tasks.jsonl`. Run "
-                                   "`python scripts/build_prompt_registry.py "
+                                   "`python scripts/dataset/build_prompt_registry.py "
                                    "--datasets-dir data/atomic_datasets` to "
                                    "refresh. Mutually exclusive with --prompt.")
     parser.add_argument("--prompt-registry", default=_DEFAULT_PROMPT_REGISTRY, type=Path,

@@ -34,16 +34,32 @@ cd "$(dirname "$0")/.."
 
 TAG=""
 SCENARIOS_OVERRIDE=()
+POLICIES_OVERRIDE=()
 TRIALS_OVERRIDE=()
+USE_RTC=0   # default to --no-rtc; flip with --rtc
 while [ $# -gt 0 ]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
+    # Default is --no-rtc (deterministic, ~22× faster). Pass --rtc to
+    # opt into the async RTC path — useful only when validating
+    # deployed-RTC behavior, since outcomes become timing-sensitive
+    # and aren't byte-reproducible across runs.
+    --rtc) USE_RTC=1; shift ;;
     # Override the default SCENARIOS list (one or more, space-separated):
     #   --scenarios pure gate_perturbed_small
     --scenarios)
       shift
       while [ $# -gt 0 ] && [[ ! "$1" =~ ^-- ]]; do
         SCENARIOS_OVERRIDE+=("$1"); shift
+      done
+      ;;
+    # Override the default POLICIES list (one or more, space-separated;
+    # each entry is the stem of a configs/policies/pi_gateway/*.yaml):
+    #   --policies nonhistory_all_93sufwik_7500 nonhistory_real_center
+    --policies)
+      shift
+      while [ $# -gt 0 ] && [[ ! "$1" =~ ^-- ]]; do
+        POLICIES_OVERRIDE+=("$1"); shift
       done
       ;;
     # Restrict each campaign to a specific trial-index subset. Passed
@@ -68,6 +84,10 @@ POLICIES=(
   nonhistory_real_center
   nonhistory_real_synth_31ohxgxv_5000
 )
+# Override with --policies if provided.
+if [ "${#POLICIES_OVERRIDE[@]}" -gt 0 ]; then
+  POLICIES=("${POLICIES_OVERRIDE[@]}")
+fi
 
 SCENARIOS=(
   pure
@@ -158,11 +178,16 @@ for POLICY in "${POLICIES[@]}"; do
     if [ "${#TRIALS_OVERRIDE[@]}" -gt 0 ]; then
       TRIALS_ARGS=(--trials "${TRIALS_OVERRIDE[@]}")
     fi
-    PYTHONPATH=src python scripts/run_eval_campaign.py \
+    RTC_ARGS=()
+    if [ "$USE_RTC" -eq 0 ]; then
+      RTC_ARGS=(--no-rtc)
+    fi
+    PYTHONPATH=src python scripts/eval/run_eval_campaign.py \
         --scenario "configs/eval_suite/${SCENARIO}.yaml" \
         --policy-config "configs/policies/pi_gateway/${POLICY}.yaml" \
         --frame configs/frames/carl_dual.yaml \
         --out "$OUT_DIR" \
+        "${RTC_ARGS[@]}" \
         --no-recovery --skip-flythrough "${TRIALS_ARGS[@]}"
     RC=$?
     if [ "$RC" -ne 0 ]; then

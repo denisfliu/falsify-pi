@@ -1,6 +1,8 @@
-"""Unit tests for ``CoursedMpcPlanner._trim_course_for_phase`` — the
-compositional-phase trim that drops course waypoints the seed has
-already passed."""
+"""Unit tests for the legacy compositional-phase trim. Skipped — the
+trim is now driven by phase metadata + ``Course.target_waypoint`` +
+``trim_course_to_target``; the old name-prefix table
+(``_PHASE_FIRST_WAYPOINT_PREFIX``) was deleted in the phase-driven
+recovery refactor."""
 
 from __future__ import annotations
 
@@ -11,6 +13,12 @@ import pytest
 
 from falsify.planning.waypoints import Course, Waypoint
 from falsify.recovery.coursed_mpc import CoursedMpcPlanner
+
+pytestmark = pytest.mark.skip(
+    reason="trim_course_for_phase replaced by Course.target_waypoint + "
+           "trim_course_to_target (phase-metadata driven). The old name-prefix "
+           "table no longer drives recovery routing."
+)
 
 
 def _make_course(waypoint_names: list[str]) -> Course:

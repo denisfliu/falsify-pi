@@ -1,8 +1,8 @@
 # `configs/eval_suite/` — evaluation scenarios
 
 Declarative scenario definitions consumed by the evaluation framework
-(scripts/generate_eval_bundles.py + scripts/run_eval_campaign.py +
-scripts/summarize_eval_campaign.py).
+(scripts/eval/generate_eval_bundles.py + scripts/eval/run_eval_campaign.py +
+scripts/eval/summarize_eval_campaign.py).
 
 ## Pipeline
 
@@ -32,7 +32,7 @@ grouped under either:
   ``tools/run_eval_sweep.sh``. ``NNN`` is shared across all policies in
   the same launch so cohort-paired comparisons line up by folder name.
   Carries a ``sweep_manifest.json``.
-- ``adhoc/`` — produced by a one-off ``scripts/run_eval_campaign.py``
+- ``adhoc/`` — produced by a one-off ``scripts/eval/run_eval_campaign.py``
   invocation without ``--out``.
 
 Inside the grouping folder each campaign is ``run-NNN-<scenario>-<ts>/``
@@ -51,7 +51,7 @@ where ``NNN`` auto-increments within that grouping folder.
 
 ```bash
 # 1. Generate trial bundles (idempotent; commit them to lock the run).
-PYTHONPATH=src python scripts/generate_eval_bundles.py \
+PYTHONPATH=src python scripts/eval/generate_eval_bundles.py \
     --scenario configs/eval_suite/pure.yaml
 
 # 2a. Run a single ad-hoc campaign against a policy (Pi-gateway only).
@@ -61,7 +61,7 @@ PYTHONPATH=src python scripts/generate_eval_bundles.py \
 #     Add --no-viz to skip the HTML reports.
 bash -c 'export PI_API_KEY=...; source tools/env.sh; \
     source tools/pi_inference_env.sh; \
-    PYTHONPATH=src python scripts/run_eval_campaign.py \
+    PYTHONPATH=src python scripts/eval/run_eval_campaign.py \
         --scenario configs/eval_suite/pure.yaml \
         --policy-config configs/policies/pi_gateway/history_h6jtbq0w_20k.yaml \
         --frame configs/frames/carl_dual.yaml'
@@ -73,13 +73,13 @@ bash -c 'export PI_API_KEY=...; source tools/env.sh; \
 bash tools/run_eval_sweep.sh --tag goal-fix   # --tag is optional
 
 # 3. Summarise (one or more campaigns side-by-side).
-PYTHONPATH=src python scripts/summarize_eval_campaign.py \
+PYTHONPATH=src python scripts/eval/summarize_eval_campaign.py \
     runs/eval_campaigns/history_h6jtbq0w_20k/sweep-001-*/run-001-pure-* \
     runs/eval_campaigns/nonhistory_ccvhs1do_20k/sweep-001-*/run-001-pure-*
 
 # 4. Backfill / re-render viz on an existing campaign dir (no GPU,
 #    no rollout — pure consumer of the on-disk artifacts).
-PYTHONPATH=src python scripts/plot_eval_run.py \
+PYTHONPATH=src python scripts/eval/plot_eval_run.py \
     runs/eval_campaigns/<policy_id>/run-NNN-<scenario>-<ts>
 ```
 
@@ -92,18 +92,18 @@ regenerate bundles when you want a fast eval-only sweep:
 
 ```bash
 # (default) — recovery fires when cards have a recovery YAML, skips otherwise
-PYTHONPATH=src python scripts/run_eval_campaign.py --scenario ... --out ...
+PYTHONPATH=src python scripts/eval/run_eval_campaign.py --scenario ... --out ...
 
 # Disable recovery globally, even for cards that carry a recovery YAML.
 # Failed trials still record the failure but skip the MPC plan + NPZ save.
 # Per-trial log line shows `recovery=off`; per-trial summary records
 # `recovery.fired: false, reason: "disabled by --no-recovery"`.
-PYTHONPATH=src python scripts/run_eval_campaign.py --scenario ... --out ... \
+PYTHONPATH=src python scripts/eval/run_eval_campaign.py --scenario ... --out ... \
     --no-recovery
 
 # Force recovery for every failed trial, using a fallback YAML when a
 # card's `recovery:` field is null (e.g. compositional cards).
-PYTHONPATH=src python scripts/run_eval_campaign.py --scenario ... --out ... \
+PYTHONPATH=src python scripts/eval/run_eval_campaign.py --scenario ... --out ... \
     --force-recovery \
     --recovery-yaml-default configs/recovery/left_gate_mpc.yaml
 ```
@@ -202,7 +202,7 @@ draw **independent** start jitter, not identical jitter under two prompts.
    time.
 
 To re-apply rules (1) and (2) to a campaign whose rollouts were
-captured under older rules, run `scripts/reclassify_campaign.py
+captured under older rules, run `scripts/eval/reclassify_campaign.py
 --campaign runs/eval_campaigns/<name>`. It updates per-trial
 `episode_summary.json` and `campaign_summary.json` in place (with
 `*.json.bak` backups on first run). Rule (3) cannot be applied

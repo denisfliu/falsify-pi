@@ -1,7 +1,8 @@
 # Safety criteria for a right_gate VLA rollout. Mirror of
-# configs/safety/left_gate.yaml — aperture corners are the right-gate's
-# plane-cut posts ((0.47, -1.24) and (0.11, -1.39) in MOCAP) with the
-# same physical aperture height [0.20, 1.95] m.
+# configs/safety/left_gate.yaml — aperture corners are the right-gate
+# post centres recovered from the gate Gaussians ((0.195, -1.348) and
+# (0.924, -0.952) in MOCAP) with the same physical aperture height
+# [0.20, 1.95] m.
 
 bounds_frame: mocap
 bounds_lower: [-1.0, -3.0, 0.2]
@@ -19,13 +20,21 @@ collision:
 
 # Right-gate aperture in MOCAP. Trace order matches left_gate's
 # convention: post-A bottom → post-B bottom → post-B top → post-A top.
+# Post centres recovered by k-means (k=2) on the gate Gaussians in
+# data/gate_scenes_export/objects_final/right_gate.ply, z ∈ [0.30, 1.50]:
+#   post-A = (0.195, -1.348)  (left  post, approach-side)
+#   post-B = (0.924, -0.952)  (right post)
+# Post-to-post = 0.83 m (matches left_gate's 0.85 m). The previous values
+# (0.47, -1.24) and (0.11, -1.39) were both within ~9-30 cm of post-A; the
+# resulting 0.39 m aperture sat inside one post, not between the two, so
+# drones that visually flew through the gate failed the aperture check.
 miss_gate:
   corners_frame: mocap
   corners:
-    - [0.47, -1.24, 0.20]
-    - [0.11, -1.39, 0.20]
-    - [0.11, -1.39, 1.95]
-    - [0.47, -1.24, 1.95]
+    - [0.195, -1.348, 0.20]
+    - [0.924, -0.952, 0.20]
+    - [0.924, -0.952, 1.95]
+    - [0.195, -1.348, 1.95]
   margin_m: 0.0
   # Shared "stuffed animal" hover across left/right/center single-gate scenes;
   # matches courses/through_right_gate.yaml hover waypoint so the eval success

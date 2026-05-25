@@ -1,8 +1,8 @@
 """Per-trial card sampling — shared between bundle generation and
 streaming collection.
 
-The eval-bundle generator (``scripts/generate_eval_bundles.py``) and the
-recovery-trajectory collector (``scripts/collect_recovery_trajectories.py``)
+The eval-bundle generator (``scripts/eval/generate_eval_bundles.py``) and the
+recovery-trajectory collector (``scripts/recovery/collect_recovery_trajectories.py``)
 both draw the same kind of trial: a start-position jitter around the
 scene's nominal start, plus an optional gate-rigid-perturbation Δxyz/Δyaw
 sampled within the scenario recipe's half-widths (rejection-sampled

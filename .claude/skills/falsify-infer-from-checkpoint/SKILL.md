@@ -85,7 +85,7 @@ truth for "which policy this run uses." Audit line printed:
 ```
 
 (`0.0s` ⇒ already active, no-op.) The CLIs (`run_vla_episode`,
-`scripts/run_eval_campaign.py`) also write a `policy_manifest.json`
+`scripts/eval/run_eval_campaign.py`) also write a `policy_manifest.json`
 next to each run capturing the YAML sha256 + bridge response.
 
 ### Targeting other topologies

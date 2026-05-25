@@ -1,6 +1,6 @@
 """Reject gate perturbations that push the gate into a scene obstacle.
 
-Used by the bundle generator (`scripts/generate_eval_bundles.py`) and the
+Used by the bundle generator (`scripts/eval/generate_eval_bundles.py`) and the
 runtime `GateRigidPerturbation` to ensure sampled Δxyz / Δyaw don't
 plausibly merge the gate Gaussians into the table (or any other obstacle
 declared under `scene_cfg["obstacles"]`).
