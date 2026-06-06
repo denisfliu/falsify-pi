@@ -522,7 +522,14 @@ class SplatNavMpcPlanner:
 
     def _chain_segments(self, anchors_ned: list[np.ndarray]) -> np.ndarray:
         """Call SplatPlan on each consecutive anchor pair in NED, convert
-        the NS-frame outputs back to NED, and concatenate."""
+        the NS-frame outputs back to NED, and concatenate. Per-segment
+        SplatPlan failures fall back to a straight line between the
+        anchors — better to ship a sub-optimal demo than to drop the
+        recovery entirely. The MPC step downstream still smooths the
+        seam, so the visible artefact is small unless the line clips
+        gate Gaussians (in which case the posthoc collision sweep flags
+        it as a warning).
+        """
         import torch  # type: ignore
 
         ns_frame = self.frame_graph.frame("ns")
@@ -531,13 +538,36 @@ class SplatNavMpcPlanner:
         for i in range(len(anchors_ned) - 1):
             a_ned = anchors_ned[i]
             b_ned = anchors_ned[i + 1]
+            # Skip degenerate zero-length segments (e.g. course ends in
+            # hover + hover_hold duplicate). SplatPlan would return a
+            # length-1 A* path and trip the segments-empty assertion.
+            if np.linalg.norm(b_ned - a_ned) < 1e-3:
+                continue
             a_ns = self.frame_graph.convert(Point(a_ned, frame=ned_frame), to="ns").xyz
             b_ns = self.frame_graph.convert(Point(b_ned, frame=ned_frame), to="ns").xyz
             x0 = torch.tensor(a_ns, dtype=torch.float32, device=self._device)
             xf = torch.tensor(b_ns, dtype=torch.float32, device=self._device)
-            out = self._splatplan.generate_path(x0, xf)
-            traj = out["traj"] if isinstance(out, dict) else out
-            seg_ns = np.asarray(traj)[:, :3]
+            seg_ns: Optional[np.ndarray] = None
+            try:
+                out = self._splatplan.generate_path(x0, xf)
+                traj = out["traj"] if isinstance(out, dict) else out
+                seg_ns = np.asarray(traj)[:, :3] if traj is not None else None
+                if seg_ns is not None and seg_ns.shape[0] < 2:
+                    seg_ns = None
+            except Exception as e:
+                print(f"[splatnav_mpc] SplatPlan segment {i} failed "
+                      f"({type(e).__name__}: {e}); falling back to straight line.")
+                seg_ns = None
+            if seg_ns is None:
+                # Straight-line fallback in NS. 10 evenly-spaced samples is
+                # enough for the MPC ref to interpolate.
+                seg_ns = np.linspace(
+                    np.asarray(a_ns, dtype=np.float64),
+                    np.asarray(b_ns, dtype=np.float64),
+                    num=10,
+                )
+                print(f"[splatnav_mpc] segment {i} fallback: straight line "
+                      f"{a_ns.round(3)} → {b_ns.round(3)} (NS).")
             # Drop the first sample of every segment after the first to
             # avoid the start ≡ previous-end duplicate.
             if i > 0 and seg_ns.shape[0] > 0:
@@ -606,9 +636,13 @@ class SplatNavMpcPlanner:
                 t=float(t),
             ))
         return Course(
+            name="splatnav_mpc_reference",
             frame=course_frame_name,
-            waypoints=tuple(waypoints),
+            fps=int(course.fps),
             total_time_s=t_total,
+            yaw_mode=course.yaw_mode,
+            waypoints=tuple(waypoints),
+            phases=(),   # synthesized course; phase metadata not needed downstream
         )
 
     def _initial_state_from(self, course: Course, start_ned: Point) -> np.ndarray:

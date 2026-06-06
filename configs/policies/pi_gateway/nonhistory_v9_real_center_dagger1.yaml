@@ -32,8 +32,11 @@ camera_map:
 image_size: 256
 channel_order: "BGR"
 
+gripper_overlay_paths:
+  downward: configs/embodiments/assets/carl_wrist_overlay.png
 server_frame: "mocap"
 
+embodiment_path: configs/embodiments/carl_dual_mocap.yaml
 traceability:
   variant: "pi07_nonhistory_v9_real_center_dagger1"
   wandb_run: null        # TODO: backfill from jatucker when available

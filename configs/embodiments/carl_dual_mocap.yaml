@@ -26,6 +26,10 @@ cameras:
     camera_name: downward
     channel_order: BGR
     image_size: 256
+    # RGBA overlay baking the drone's own struts / gripper into the sim
+    # render so it matches the static occlusion the real wrist-cam
+    # always sees. Composited last in `CameraPostprocess.apply`.
+    gripper_overlay_path: configs/embodiments/assets/carl_wrist_overlay.png
   - column: "3pov_1"         # third person — falsify has no synthetic 3pov
     source: zeros
     channel_order: BGR

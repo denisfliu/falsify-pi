@@ -66,14 +66,15 @@ produced by `falsify-trajectory-from-vla`.
 - **`falsify-export-parquet`** — render and emit the parquet.
 - **`falsify-orchestrate-batch`** — bulk-export many courses across scenes.
 
-## Future planners (same Course YAML, swap the backend)
+## Other planners (same Course YAML, swap the backend)
 
-- **`falsify-trajectory-from-mpc`** (stub) — wrap the spline output into
-  a FiGS course and let `VehicleRateMPC` produce a dynamically-feasible
-  trajectory. The Course YAML you've already authored is the right input.
-- **`falsify-trajectory-from-splatnav`** (stub) — replace the spline
-  segment with SplatNav's collision-free A* + spline through the
-  Gaussian-splat scene.
+- **`falsify-trajectory-from-mpc`** (done) — wrap the same Course YAML
+  with `--planner mpc` and let `VehicleRateMPC` produce a dynamically-
+  feasible trajectory. Used by `falsify.recovery.CoursedMpcPlanner` as
+  the default recovery backend.
+- **`falsify-trajectory-from-splatnav`** (stub — primary planner
+  pending; recovery wired) — replace the spline segment with SplatNav's
+  collision-free A* + spline through the Gaussian-splat scene.
 
 ## Gotchas
 

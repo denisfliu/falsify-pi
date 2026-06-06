@@ -63,6 +63,7 @@ from falsify.geometry import (
     FrameGraph, Point, Trajectory, assert_frame,
 )
 from .base import Policy
+from .camera_postprocess import CameraPostprocess
 from .observation import Observation
 
 
@@ -107,6 +108,12 @@ class VLAPolicyConfig:
     forward_camera: str = "forward"
     downward_camera: str = "downward"
 
+    # Optional per-camera RGBA overlay paths (e.g. wrist gripper).
+    # Composited as the last step of preprocess so train/eval see
+    # identical bytes. Keys are camera names ("forward", "downward");
+    # missing entries → no overlay for that camera.
+    gripper_overlay_paths: dict[str, str] = field(default_factory=dict)
+
     # Frame in which the VLA was trained. Server outputs are converted from
     # this frame into NED on the way out.
     server_frame: str = "mocap"
@@ -132,17 +139,13 @@ def _resize_image(rgb: np.ndarray, size: int) -> np.ndarray:
     return np.asarray(img.resize((size, size), _Image.BILINEAR))
 
 
-def _quat_to_yaw_xyzw(q: np.ndarray) -> float:
-    qx, qy, qz, qw = q
-    return float(np.arctan2(
-        2.0 * (qw * qz + qx * qy),
-        1.0 - 2.0 * (qy * qy + qz * qz),
-    ))
-
-
-def _yaw_to_quat_xyzw(yaw: float) -> np.ndarray:
-    """Yaw about the z-axis as a unit quaternion in xyzw layout."""
-    return np.array([0.0, 0.0, np.sin(0.5 * yaw), np.cos(0.5 * yaw)])
+# Re-exports from `falsify.geometry.yaw` — kept under their legacy
+# underscore-prefixed names because external code (e.g.
+# `training.exporter`) historically imported them from here.
+_quat_to_yaw_xyzw = None  # populated just below
+_yaw_to_quat_xyzw = None
+from falsify.geometry import quat_to_yaw_xyzw as _quat_to_yaw_xyzw  # noqa: E402, F811
+from falsify.geometry import yaw_to_quat_xyzw as _yaw_to_quat_xyzw  # noqa: E402, F811
 
 
 def _load_third_person(path: Optional[str], size: int) -> np.ndarray:
@@ -174,6 +177,18 @@ class VLAPolicy(Policy):
         self._query_count = 0
         self._step_count = 0
         self._third_person_cache: Optional[np.ndarray] = None
+        # Shared with `PiGatewayPolicy` and `TrainingDataExporter`: same
+        # resize → channel swap → overlay pipeline so a policy YAML and
+        # an embodiment YAML pointing at the same overlay produce
+        # byte-identical preprocess.
+        self._postprocess: dict[str, CameraPostprocess] = {
+            cam_name: CameraPostprocess.from_paths(
+                image_size=cfg.image_size,
+                channel_order="RGB",   # OpenPI server expects RGB pixels
+                overlay_path=cfg.gripper_overlay_paths.get(cam_name),
+            )
+            for cam_name in (cfg.forward_camera, cfg.downward_camera)
+        }
 
     @property
     def required_modalities(self) -> frozenset[str]:
@@ -222,8 +237,8 @@ class VLAPolicy(Policy):
         sz = self.cfg.image_size
         rgb_fwd_native = obs.require(f"images.{self.cfg.forward_camera}")
         rgb_dwn_native = obs.require(f"images.{self.cfg.downward_camera}")
-        rgb_fwd = _resize_image(rgb_fwd_native, sz)
-        rgb_dwn = _resize_image(rgb_dwn_native, sz)
+        rgb_fwd = self._postprocess[self.cfg.forward_camera].apply(rgb_fwd_native)
+        rgb_dwn = self._postprocess[self.cfg.downward_camera].apply(rgb_dwn_native)
         if self._third_person_cache is None:
             self._third_person_cache = _load_third_person(
                 self.cfg.third_person_image_path, sz,

@@ -140,22 +140,28 @@ no correct crossing), the trial is classified ``MISS_GATE``. See
 ### v7 finetune policy preprocess
 
 Every ``configs/policies/pi_gateway/*.yaml`` for the v7/v9 gate-scenes
-finetunes (the nine variants currently under
-``configs/policies/pi_gateway/``: ``history_h6jtbq0w_20k``,
-``nonhistory_*``, ``live_v7_nh_center``, ``nonhistory_v9_real_*``) must set:
+finetunes (the twelve variants currently shipped under
+``configs/policies/pi_gateway/``: ``history_*``, ``nonhistory_*``,
+``live_v7_nh_center``, ``nonhistory_v9_real_*``) must set:
 
 ```yaml
 image_size: 256        # resize each cam to 256x256 before sending
 channel_order: "BGR"   # flip RGB → BGR before sending
+gripper_overlay_paths:
+  downward: configs/embodiments/assets/carl_wrist_overlay.png
+embodiment_path: configs/embodiments/carl_dual_mocap.yaml
 ```
 
-Both knobs match the training-data preprocess in
-``src/falsify/training/exporter.py`` (PIL bilinear resize to
-``cam.image_size`` and ``img[..., ::-1]`` when ``channel_order==BGR``).
-Without them, the policy sees red/blue-swapped pixels at a different
-aspect ratio than at training time, which empirically tanks the
-SUCCESS rate. See ``src/falsify/policy/CLAUDE.md§ Preprocess parity``
-for the full rationale.
+All four knobs drive the shared
+``falsify.policy.camera_postprocess.CameraPostprocess`` (resize →
+channel swap → optional gripper overlay) and
+``falsify.policy.state_assembly.build_state_vector`` (embodiment-driven
+state schema) that the training exporter also uses. Without them, the
+policy sees red/blue-swapped pixels at a different aspect ratio than
+at training time, with no gripper occlusion on the wrist cam — which
+empirically tanks the SUCCESS rate. See
+``src/falsify/policy/CLAUDE.md § Preprocess parity`` for the full
+rationale.
 
 ## Producing training data
 

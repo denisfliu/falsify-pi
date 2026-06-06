@@ -476,30 +476,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # 2) Build the per-trial policy, detector, recovery, suite.
         record_dir = trial_dir / "vla_io"
-        pgcfg = PiGatewayConfig(
-            gateway_url=policy_cfg_yaml["gateway_url"],
-            api_key=policy_cfg_yaml.get("api_key", ""),
-            execute_chunk_size=int(
-                args.execute_chunk_size
-                if args.execute_chunk_size is not None
-                else policy_cfg_yaml.get("execute_chunk_size", 25)
-            ),
-            prompt=prompt_text,
-            hz=int(policy_cfg_yaml.get("hz", 30)),
-            state_dim=int(policy_cfg_yaml.get("state_dim", 7)),
-            action_dim=int(policy_cfg_yaml.get("action_dim", 7)),
-            action_pos_slice=tuple(policy_cfg_yaml.get("action_pos_slice", (0, 3))),
-            action_yaw_index=policy_cfg_yaml.get("action_yaw_index", 3),
-            camera_map=dict(policy_cfg_yaml.get("camera_map") or {}),
-            state_key=policy_cfg_yaml.get("state_key", "observation/state"),
-            server_frame=policy_cfg_yaml.get("server_frame", "mocap"),
-            bridge_admin_url=policy_cfg_yaml.get("bridge_admin_url"),
-            bridge_policy_id=policy_cfg_yaml.get("bridge_policy_id"),
-            use_rtc=(False if args.no_rtc
-                     else bool(policy_cfg_yaml.get("use_rtc", False))),
-            image_size=policy_cfg_yaml.get("image_size"),
-            channel_order=str(policy_cfg_yaml.get("channel_order", "RGB")),
-            traceability=dict(policy_cfg_yaml.get("traceability") or {}),
+        pgcfg = PiGatewayConfig.from_yaml(
+            policy_path,
+            prompt_override=prompt_text,
+            execute_chunk_size_override=args.execute_chunk_size,
+            use_rtc_override=(False if args.no_rtc else None),
             record_dir=record_dir,
         )
         effective_hz = pgcfg.hz
@@ -992,6 +973,53 @@ def main(argv: Optional[list[str]] = None) -> int:
                     target_waypoint=target_waypoint,
                 )
                 plan_dt = time.time() - t_plan
+
+                # Bounds-safety check: reject recoveries whose planned
+                # trajectory wanders outside the scene's MOCAP bounds.
+                # The MPC tracker can occasionally blow up under tight
+                # constraints (we saw SQP_RTI status-3 warnings) and
+                # produce trajectories that overshoot well past the
+                # scene. We use the same bounds the SplatPlan voxel grid
+                # is built against, with a small margin. Outside ⇒ skip
+                # this trial; don't pollute the training data.
+                rt_check = result.trajectory
+                pos_mocap_check = np.stack([
+                    fg.convert(_Pt(np.asarray(p, dtype=np.float64),
+                                   frame=fg.frame("ned")), to="mocap").xyz
+                    for p in rt_check.positions
+                ])
+                bounds_margin_m = 0.5
+                lo = np.asarray(planner.cfg.bounds_lower_mocap) - bounds_margin_m
+                hi = np.asarray(planner.cfg.bounds_upper_mocap) + bounds_margin_m
+                oob_mask = (
+                    (pos_mocap_check < lo).any(axis=1)
+                    | (pos_mocap_check > hi).any(axis=1)
+                )
+                if oob_mask.any():
+                    n_oob = int(oob_mask.sum())
+                    first_oob = int(np.where(oob_mask)[0][0])
+                    worst = pos_mocap_check[np.argmax(
+                        np.maximum(
+                            (lo - pos_mocap_check).max(axis=1),
+                            (pos_mocap_check - hi).max(axis=1),
+                        )
+                    )]
+                    print(f"   [skip] trial_{trial_idx:03d}: recovery left "
+                          f"bounds (n_oob={n_oob}/{len(pos_mocap_check)}, "
+                          f"first_step={first_oob}, worst_pos_mocap="
+                          f"{worst.round(2).tolist()}, "
+                          f"bounds=[{lo.tolist()}, {hi.tolist()}]); "
+                          "not saving — MPC likely diverged.")
+                    summary_path = trial_dir / "episode_summary.json"
+                    summary_disk = json.loads(summary_path.read_text())
+                    summary_disk["recovery_fired"] = False
+                    summary_disk["recovery_skipped_reason"] = (
+                        f"out_of_bounds: n_oob={n_oob}, "
+                        f"first_step={first_oob}"
+                    )
+                    summary_path.write_text(json.dumps(summary_disk, indent=2))
+                    n_errors += 1
+                    continue
 
                 # Save recovery NPZ + update episode summary.
                 # The saved trajectory is the FULL drone path: the original

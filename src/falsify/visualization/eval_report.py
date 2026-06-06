@@ -424,6 +424,15 @@ def _draw_trial_overlays(
 
         if t["recovery_npz"] is not None:
             recv_ned = np.load(t["recovery_npz"], allow_pickle=True)["positions_ned"]
+            # The saved recovery NPZ is the FULL path (VLA prefix +
+            # MPC suffix). Drawing all of it would retrace the rollout
+            # until the seed; slice off the prefix so the cyan line
+            # shows ONLY the corrective suffix (seed → goal). Older
+            # NPZs predate the prepend and carry no prefix_steps, so the
+            # default 0 draws them whole (they were already suffix-only).
+            prefix_steps = int((s.get("recovery_info") or {}).get("prefix_steps", 0) or 0)
+            prefix_steps = max(0, min(prefix_steps, len(recv_ned) - 2))
+            recv_ned = recv_ned[prefix_steps:]
             recv_mocap = _ned_to_mocap_via_scene(scene_path, recv_ned)
             recv_key = f"{scene_key}/recovery"
             show_recv = recv_key not in legend_seen

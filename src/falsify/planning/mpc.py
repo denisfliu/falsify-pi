@@ -70,8 +70,7 @@ _DEFAULT_FRAME_PATH = Path("configs/frames/figs/carl.json")
 # ---------------------------------------------------------------------------
 
 
-def _yaw_to_quat_xyzw(yaw: float) -> np.ndarray:
-    return np.array([0.0, 0.0, np.sin(0.5 * yaw), np.cos(0.5 * yaw)])
+from falsify.geometry import yaw_to_quat_xyzw as _yaw_to_quat_xyzw  # noqa: E402
 
 
 def _waypoints_to_ned(course: Course, frame_graph: FrameGraph) -> np.ndarray:

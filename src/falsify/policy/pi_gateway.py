@@ -57,7 +57,9 @@ import numpy as np
 from falsify.geometry import FrameGraph, Point, Trajectory, assert_frame
 
 from .base import Policy
+from .camera_postprocess import CameraPostprocess
 from .observation import Observation
+from .state_assembly import build_state_vector
 
 
 _ENV_RE = re.compile(r"\$\{env:([A-Z_][A-Z0-9_]*)\}")
@@ -128,6 +130,13 @@ class PiGatewayConfig:
     image_size: Optional[int] = None
     channel_order: str = "RGB"
 
+    # Per-camera RGBA overlay paths (e.g. drone gripper baked onto the
+    # downward camera). Keys are falsify camera names ("forward",
+    # "downward"); paths are relative to the working directory or
+    # absolute. Cameras not in this dict get no overlay. Composited as
+    # the last step of preprocess so train/eval see identical bytes.
+    gripper_overlay_paths: dict[str, str] = field(default_factory=dict)
+
     # Server-side state input key. The Pi client's default `state=` kwarg
     # always emits `observation/joint_position`; the v7 server expects
     # `observation/state` instead, so we route the state vector via the
@@ -136,6 +145,15 @@ class PiGatewayConfig:
 
     # --- Frame ---
     server_frame: str = "mocap"
+
+    # Path to the embodiment YAML the trained checkpoint was authored
+    # against. When set, the policy walks `embodiment.state` to build
+    # the state vector — same code path as `TrainingDataExporter`. When
+    # `None`, falls back to the hardcoded v7 layout
+    # `[px_mocap, py_mocap, pz_mocap, -yaw_ned, 0, 0, 0]`. Setting this
+    # is the recommended path because it makes "train and eval send the
+    # same state shape" a property of the YAMLs, not of policy code.
+    embodiment_path: Optional[str] = None
 
     # --- Bridge admin handshake (pi_local_bridge multi-policy hosting) ---
     # When `bridge_admin_url` is set, the policy adapter GETs
@@ -158,22 +176,106 @@ class PiGatewayConfig:
     # --- Debug ---
     record_dir: Optional[Path] = None
 
+    # ------------------------------------------------------------------
+    # YAML loader — single source of truth for `pi_gateway`-typed
+    # policy YAMLs under `configs/policies/pi_gateway/`. The CLIs
+    # (`run_vla_episode`, `run_eval_campaign`,
+    # `collect_recovery_trajectories`, `smoke_test`) all funnel through
+    # this so a new YAML field requires one edit here, not four.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict,
+        *,
+        prompt_override: Optional[str] = None,
+        execute_chunk_size_override: Optional[int] = None,
+        use_rtc_override: Optional[bool] = None,
+        record_dir: Optional[Path] = None,
+        source: Optional[str] = None,
+    ) -> "PiGatewayConfig":
+        """Build a `PiGatewayConfig` from a parsed YAML dict.
+
+        Validates ``type: pi_gateway`` if the key is present. Caller
+        overrides win over the YAML — used by the eval campaign /
+        recovery drivers, which thread CLI flags through the same loader.
+
+        ``source`` is a free-form tag (typically the YAML path) used
+        only in error messages.
+        """
+        if cfg.get("type") not in (None, "pi_gateway"):
+            tag = f" from {source}" if source else ""
+            raise ValueError(
+                f"PiGatewayConfig.from_dict{tag}: expected type=pi_gateway, "
+                f"got {cfg.get('type')!r}"
+            )
+        record_dir_resolved = record_dir
+        if record_dir_resolved is None and cfg.get("record_dir") is not None:
+            record_dir_resolved = Path(cfg["record_dir"])
+        return cls(
+            gateway_url=cfg["gateway_url"],
+            api_key=cfg.get("api_key", ""),
+            execute_chunk_size=int(
+                execute_chunk_size_override
+                if execute_chunk_size_override is not None
+                else cfg.get("execute_chunk_size", 25)
+            ),
+            prompt=prompt_override if prompt_override is not None else cfg.get("prompt", ""),
+            hz=int(cfg.get("hz", 30)),
+            state_dim=int(cfg.get("state_dim", 7)),
+            action_dim=int(cfg.get("action_dim", 7)),
+            action_pos_slice=tuple(cfg.get("action_pos_slice", (0, 3))),
+            action_yaw_index=cfg.get("action_yaw_index", 3),
+            camera_map=dict(cfg.get("camera_map") or {}),
+            state_key=cfg.get("state_key", "observation/state"),
+            server_frame=cfg.get("server_frame", "mocap"),
+            bridge_admin_url=cfg.get("bridge_admin_url"),
+            bridge_policy_id=cfg.get("bridge_policy_id"),
+            use_rtc=bool(use_rtc_override if use_rtc_override is not None
+                         else cfg.get("use_rtc", False)),
+            image_size=cfg.get("image_size"),
+            channel_order=str(cfg.get("channel_order", "RGB")),
+            gripper_overlay_paths=dict(cfg.get("gripper_overlay_paths") or {}),
+            sample_args=cfg.get("sample_args"),
+            traceability=dict(cfg.get("traceability") or {}),
+            record_dir=record_dir_resolved,
+            embodiment_path=cfg.get("embodiment_path"),
+        )
+
+    @classmethod
+    def from_yaml(
+        cls,
+        path: str | Path,
+        *,
+        prompt_override: Optional[str] = None,
+        execute_chunk_size_override: Optional[int] = None,
+        use_rtc_override: Optional[bool] = None,
+        record_dir: Optional[Path] = None,
+    ) -> "PiGatewayConfig":
+        """Load + parse a `pi_gateway`-typed YAML file. Thin wrapper around `from_dict`."""
+        import yaml as _yaml
+        path = Path(path)
+        cfg = _yaml.safe_load(path.read_text())
+        return cls.from_dict(
+            cfg,
+            prompt_override=prompt_override,
+            execute_chunk_size_override=execute_chunk_size_override,
+            use_rtc_override=use_rtc_override,
+            record_dir=record_dir,
+            source=str(path),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers (mirroring VLAPolicy's conventions)
 # ---------------------------------------------------------------------------
 
 
-def _quat_to_yaw_xyzw(q: np.ndarray) -> float:
-    qx, qy, qz, qw = q
-    return float(np.arctan2(
-        2.0 * (qw * qz + qx * qy),
-        1.0 - 2.0 * (qy * qy + qz * qz),
-    ))
-
-
-def _yaw_to_quat_xyzw(yaw: float) -> np.ndarray:
-    return np.array([0.0, 0.0, np.sin(0.5 * yaw), np.cos(0.5 * yaw)])
+from falsify.geometry import (
+    quat_to_yaw_xyzw as _quat_to_yaw_xyzw,
+    yaw_to_quat_xyzw as _yaw_to_quat_xyzw,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +306,39 @@ class PiGatewayPolicy(Policy):
         # policy_manifest.json so a reviewer can prove which bridge
         # checkpoint produced the run.
         self.bridge_manifest: Optional[dict[str, Any]] = None
+
+        # Per-camera postprocess pipeline (resize → channel swap →
+        # optional overlay). Same `CameraPostprocess` the training
+        # exporter uses; sharing the class makes train/eval byte-parity
+        # a property of the code, not of YAML-keeping discipline.
+        unknown_overlays = set(cfg.gripper_overlay_paths) - set(cfg.camera_map)
+        if unknown_overlays:
+            raise ValueError(
+                f"PiGatewayConfig.gripper_overlay_paths references cameras "
+                f"not in camera_map: {sorted(unknown_overlays)}"
+            )
+        self._postprocess: dict[str, CameraPostprocess] = {
+            cam_name: CameraPostprocess.from_paths(
+                image_size=cfg.image_size,
+                channel_order=cfg.channel_order,
+                overlay_path=cfg.gripper_overlay_paths.get(cam_name),
+            )
+            for cam_name in cfg.camera_map
+        }
+
+        # Optional embodiment-driven state assembly. Loaded lazily here
+        # so falsify.training is only imported when this knob is set —
+        # keeps mock-policy runs from pulling pyarrow.
+        self._embodiment = None
+        if cfg.embodiment_path is not None:
+            from falsify.training import load_embodiment
+            self._embodiment = load_embodiment(cfg.embodiment_path)
+            if self._embodiment.state_dim() != cfg.state_dim:
+                raise ValueError(
+                    f"PiGatewayPolicy: embodiment {cfg.embodiment_path!r} declares "
+                    f"state_dim={self._embodiment.state_dim()} but config.state_dim="
+                    f"{cfg.state_dim} — these must match"
+                )
 
     @property
     def required_modalities(self) -> frozenset[str]:
@@ -348,44 +483,36 @@ class PiGatewayPolicy(Policy):
         yaw_ned = _quat_to_yaw_xyzw(obs.state.quat_xyzw)
         yaw_to_vla = -yaw_ned
 
-        # 2) Build the state vector (7-D for v7 gate-scenes; dims 4-6 = 0).
-        state_vec = np.zeros(self.cfg.state_dim, dtype=np.float32)
-        state_vec[0:3] = pos_mocap
-        if self.cfg.state_dim >= 4:
-            state_vec[3] = yaw_to_vla
+        # 2) Build the state vector. When an embodiment YAML is wired
+        #    via `cfg.embodiment_path`, walk its declared state schema
+        #    (same code path as `TrainingDataExporter`). Otherwise fall
+        #    back to the hardcoded v7 gate-scenes layout
+        #    `[px_mocap, py_mocap, pz_mocap, -yaw_ned, 0, 0, 0]`.
+        if self._embodiment is not None:
+            pos_ned = pos_state.xyz
+            state_vec = build_state_vector(
+                self._embodiment,
+                pos_mocap=pos_mocap, yaw_mocap=yaw_to_vla,
+                pos_ned=pos_ned, yaw_ned=yaw_ned,
+            )
+        else:
+            state_vec = np.zeros(self.cfg.state_dim, dtype=np.float32)
+            state_vec[0:3] = pos_mocap
+            if self.cfg.state_dim >= 4:
+                state_vec[3] = yaw_to_vla
 
-        # 3) Images — replicate the training-export preprocess
-        #    (`falsify.training.exporter`) before handing to the client:
-        #    optional resize to `cfg.image_size`² (PIL bilinear), then
-        #    optional channel flip to BGR. The server's own image_preprocess
-        #    (v7 = 448² square resize) still runs on top — same as it did
-        #    at training time, when it consumed 256² PNGs.
+        # 3) Images — runs the shared CameraPostprocess (resize → channel
+        #    swap → optional gripper overlay) so what we send is
+        #    byte-identical to what `falsify.training.exporter` wrote at
+        #    training time. The server's own image_preprocess (v7 = 448²
+        #    square resize) still runs on top.
         images: dict[str, np.ndarray] = {}
         native_images: dict[str, np.ndarray] = {}
         sent_images: dict[str, np.ndarray] = {}
         for cam_name, server_key in self.cfg.camera_map.items():
             rgb_native = obs.require(f"images.{cam_name}")
             native_images[cam_name] = rgb_native
-            sent = rgb_native
-            if self.cfg.image_size is not None and (
-                sent.shape[0] != self.cfg.image_size
-                or sent.shape[1] != self.cfg.image_size
-            ):
-                from PIL import Image as _Image
-                sent = np.asarray(
-                    _Image.fromarray(sent).resize(
-                        (self.cfg.image_size, self.cfg.image_size),
-                        _Image.BILINEAR,
-                    ),
-                    dtype=np.uint8,
-                )
-            if self.cfg.channel_order.upper() == "BGR":
-                sent = sent[..., ::-1].copy()
-            elif self.cfg.channel_order.upper() != "RGB":
-                raise ValueError(
-                    f"PiGatewayPolicy: channel_order must be 'RGB' or "
-                    f"'BGR'; got {self.cfg.channel_order!r}"
-                )
+            sent = self._postprocess[cam_name].apply(rgb_native)
             images[server_key] = sent
             sent_images[cam_name] = sent
 

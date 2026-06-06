@@ -165,28 +165,7 @@ def _policy_factory_from_yaml(policy_cfg: dict, *, scene_cfg=None, scene_dir=Non
         # Lazy import — keeps mock-only runs from importing pi_inference_client.
         from falsify.policy import PiGatewayConfig, PiGatewayPolicy
 
-        record_dir_arg = policy_cfg.get("record_dir")
-        if record_dir_arg is not None:
-            record_dir_arg = Path(record_dir_arg)
-        cfg = PiGatewayConfig(
-            gateway_url=policy_cfg["gateway_url"],
-            api_key=policy_cfg.get("api_key", ""),
-            execute_chunk_size=int(policy_cfg.get("execute_chunk_size", 25)),
-            prompt=policy_cfg.get("prompt", ""),
-            hz=int(policy_cfg.get("hz", 30)),
-            state_dim=int(policy_cfg.get("state_dim", 7)),
-            action_dim=int(policy_cfg.get("action_dim", 7)),
-            action_pos_slice=tuple(policy_cfg.get("action_pos_slice", (0, 3))),
-            action_yaw_index=policy_cfg.get("action_yaw_index", 3),
-            camera_map=dict(policy_cfg.get("camera_map") or {}),
-            state_key=policy_cfg.get("state_key", "observation/state"),
-            server_frame=policy_cfg.get("server_frame", "mocap"),
-            use_rtc=bool(policy_cfg.get("use_rtc", False)),
-            image_size=policy_cfg.get("image_size"),
-            channel_order=str(policy_cfg.get("channel_order", "RGB")),
-            traceability=dict(policy_cfg.get("traceability") or {}),
-            record_dir=record_dir_arg,
-        )
+        cfg = PiGatewayConfig.from_dict(policy_cfg, source="<smoke falsification YAML>")
 
         def factory(_goal: Point, _episode_cfg):
             fg = build_frame_graph(scene_cfg, base_path=scene_dir)

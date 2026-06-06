@@ -70,7 +70,11 @@ def trim_course_to_target(course: Course, target_waypoint_name: str) -> Course:
         f"[course_utils] trimmed {idx} waypoint(s) before target "
         f"{target_waypoint_name!r}"
     )
-    return replace(course, waypoints=new_waypoints)
+    # Drop phases on the trimmed course — the phases reference
+    # waypoint names that may have been trimmed away, and the
+    # ``__post_init__`` validator would reject the truncated course.
+    # The recovery planner doesn't re-consult phases after trim.
+    return replace(course, waypoints=new_waypoints, phases=())
 
 
 def apply_gate_deltas_to_course(

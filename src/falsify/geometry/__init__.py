@@ -22,6 +22,7 @@ from .transforms import SE3, Sim3
 from .frame_graph import FrameGraph
 from .loaders import register_loader, get_loader, available_loaders
 from .presets import axis_permutation, available_presets
+from .yaw import quat_to_yaw_xyzw, yaw_to_quat_xyzw
 
 __all__ = [
     "Frame",
@@ -32,4 +33,5 @@ __all__ = [
     "FrameGraph",
     "register_loader", "get_loader", "available_loaders",
     "axis_permutation", "available_presets",
+    "quat_to_yaw_xyzw", "yaw_to_quat_xyzw",
 ]

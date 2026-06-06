@@ -1,18 +1,24 @@
 """Plan a Trajectory NPZ from a Course YAML.
 
-Default planner: cubic spline through the waypoint positions, sampled at
-the course's fps. Honours the course's ``yaw_mode``. Output is a canonical
-Trajectory NPZ that ``falsify.cli.export_training_data`` consumes directly.
+Two planners are wired:
 
-When the FiGS-MPC integrator lands, this CLI will gain a ``--planner mpc``
-flag with no schema change; downstream consumers see the same Trajectory
-NPZ either way.
+- ``--planner spline`` (default) — cubic spline through the waypoint
+  positions, sampled at the course's fps. Honours the course's
+  ``yaw_mode``. Fast (~ms); no dynamics.
+- ``--planner mpc`` — FiGS ``VehicleRateMPC`` over a
+  ``min_time_snap`` reference; dynamically feasible. Same recovery
+  backend used by ``falsify.recovery.CoursedMpcPlanner``.
+
+Output is a canonical Trajectory NPZ that
+``falsify.cli.export_training_data`` consumes directly — schema is
+identical regardless of planner.
 
 Example::
 
     .venv/bin/python -m falsify.cli.plan_trajectory \\
         --course configs/courses/through_left_gate.yaml \\
         --scene configs/scenes/left_gate.yaml \\
+        --planner mpc \\
         --out runs/courses/through_left_gate/trajectory.npz \\
         --prompt "go through the gate and hover over the stuffed animal"
 """

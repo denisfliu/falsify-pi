@@ -436,30 +436,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             # the gateway side. record_dir is per-trial so vla_io stays
             # organised.
             record_dir = trial_dir / "vla_io"
-            pgcfg = PiGatewayConfig(
-                gateway_url=policy_cfg_yaml["gateway_url"],
-                api_key=policy_cfg_yaml.get("api_key", ""),
-                execute_chunk_size=int(
-                    args.execute_chunk_size
-                    if args.execute_chunk_size is not None
-                    else policy_cfg_yaml.get("execute_chunk_size", 25)
-                ),
-                prompt=card.prompt,
-                hz=int(policy_cfg_yaml.get("hz", 30)),
-                state_dim=int(policy_cfg_yaml.get("state_dim", 7)),
-                action_dim=int(policy_cfg_yaml.get("action_dim", 7)),
-                action_pos_slice=tuple(policy_cfg_yaml.get("action_pos_slice", (0, 3))),
-                action_yaw_index=policy_cfg_yaml.get("action_yaw_index", 3),
-                camera_map=dict(policy_cfg_yaml.get("camera_map") or {}),
-                state_key=policy_cfg_yaml.get("state_key", "observation/state"),
-                server_frame=policy_cfg_yaml.get("server_frame", "mocap"),
-                bridge_admin_url=policy_cfg_yaml.get("bridge_admin_url"),
-                bridge_policy_id=policy_cfg_yaml.get("bridge_policy_id"),
-                use_rtc=(False if args.no_rtc
-                         else bool(policy_cfg_yaml.get("use_rtc", False))),
-                image_size=policy_cfg_yaml.get("image_size"),
-                channel_order=str(policy_cfg_yaml.get("channel_order", "RGB")),
-                traceability=dict(policy_cfg_yaml.get("traceability") or {}),
+            pgcfg = PiGatewayConfig.from_yaml(
+                policy_cfg_path_resolved,
+                prompt_override=card.prompt,
+                execute_chunk_size_override=args.execute_chunk_size,
+                use_rtc_override=(False if args.no_rtc else None),
                 record_dir=record_dir,
             )
             effective_hz = pgcfg.hz

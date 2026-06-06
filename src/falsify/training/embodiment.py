@@ -32,6 +32,12 @@ class CameraSpec:
     static_path: Optional[str] = None  # path to a static PNG, when source == "static"
     channel_order: Literal["RGB", "BGR"] = "BGR"
     image_size: int = 256             # square output edge
+    # Optional RGBA PNG composited onto the final post-resize / post-channel-
+    # swap image. Used to bake the drone's own struts / gripper into the
+    # downward camera so sim and real share the same static occlusion.
+    # The overlay must be at `image_size`² and channel-ordered to match
+    # `channel_order` (typically authored against the same dataset).
+    gripper_overlay_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,7 @@ def load_embodiment(path: str | Path) -> EmbodimentSpec:
             static_path=c.get("static_path"),
             channel_order=c.get("channel_order", "BGR"),
             image_size=int(c.get("image_size", cfg.get("image_size", 256))),
+            gripper_overlay_path=c.get("gripper_overlay_path"),
         )
         for c in cfg["cameras"]
     )

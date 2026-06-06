@@ -334,40 +334,19 @@ def main(argv: list[str] | None = None) -> int:
     if use_pi_gateway:
         import hashlib
         from falsify.policy import PiGatewayConfig, PiGatewayPolicy
-        policy_cfg = load_yaml(args.policy_config)
-        if policy_cfg.get("type") != "pi_gateway":
-            raise ValueError(
-                f"--policy-config expects type: pi_gateway, got {policy_cfg.get('type')!r}"
-            )
         policy_cfg_bytes = args.policy_config.read_bytes()
         policy_cfg_sha = hashlib.sha256(policy_cfg_bytes).hexdigest()
+        # Peek at the YAML for the logging line; `from_yaml` handles parsing.
+        policy_cfg = load_yaml(args.policy_config)
         print(
             f"[policy] {args.policy_config.name} sha256={policy_cfg_sha[:12]} "
             f"bridge_policy_id={policy_cfg.get('bridge_policy_id') or '(none)'} "
             f"bridge_admin_url={policy_cfg.get('bridge_admin_url') or '(none)'}"
         )
-        pgcfg = PiGatewayConfig(
-            gateway_url=policy_cfg["gateway_url"],
-            api_key=policy_cfg.get("api_key", ""),
-            execute_chunk_size=int(policy_cfg.get("execute_chunk_size", 25)),
-            # CLI --prompt wins: the user explicitly supplied it (required arg),
-            # so the YAML's prompt is just a default for un-flagged invocations
-            # (and a traceability anchor — what the YAML was built around).
-            prompt=args.prompt or policy_cfg.get("prompt", ""),
-            hz=int(policy_cfg.get("hz", args.hz)),
-            state_dim=int(policy_cfg.get("state_dim", 7)),
-            action_dim=int(policy_cfg.get("action_dim", 7)),
-            action_pos_slice=tuple(policy_cfg.get("action_pos_slice", (0, 3))),
-            action_yaw_index=policy_cfg.get("action_yaw_index", 3),
-            camera_map=dict(policy_cfg.get("camera_map") or {}),
-            state_key=policy_cfg.get("state_key", "observation/state"),
-            server_frame=policy_cfg.get("server_frame", "mocap"),
-            bridge_admin_url=policy_cfg.get("bridge_admin_url"),
-            bridge_policy_id=policy_cfg.get("bridge_policy_id"),
-            use_rtc=bool(policy_cfg.get("use_rtc", False)),
-            image_size=policy_cfg.get("image_size"),
-            channel_order=str(policy_cfg.get("channel_order", "RGB")),
-            traceability=dict(policy_cfg.get("traceability") or {}),
+        # CLI --prompt wins over the YAML's default prompt.
+        pgcfg = PiGatewayConfig.from_yaml(
+            args.policy_config,
+            prompt_override=args.prompt or None,
             record_dir=record_dir,
         )
 

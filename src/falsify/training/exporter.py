@@ -30,11 +30,15 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from falsify.geometry import FrameGraph, Frame, Point, Pose
-from falsify.policy.vla import _quat_to_yaw_xyzw  # reuse the canonical implementation
+from falsify.geometry import FrameGraph, Frame, Point, Pose, quat_to_yaw_xyzw
+from falsify.policy.camera_postprocess import CameraPostprocess
+from falsify.policy.state_assembly import build_state_vector
 from falsify.sensors.camera import CameraSpec, make_camera_sensor_from_yaml
 from falsify.sim.dynamics_state import DroneState
 from falsify.sim.poses import camera_to_world_pose
+
+# Legacy alias for back-compat with anything importing from here.
+_quat_to_yaw_xyzw = quat_to_yaw_xyzw
 
 from .embodiment import CameraSpec as _EmbCameraSpec
 from .embodiment import EmbodimentSpec
@@ -79,6 +83,10 @@ class TrainingDataExporter:
 
         # Resolve embodiment cameras to falsify CameraSpecs once.
         self._camera_specs: dict[str, CameraSpec] = {}
+        # Per-camera-column postprocess pipeline (resize → channel swap →
+        # optional overlay). Built once at init; the only runtime call is
+        # `pp.apply(rgb_native)` on the hot path.
+        self._postprocess: dict[str, CameraPostprocess] = {}
         for cam in embodiment.cameras:
             if cam.source == "render":
                 if cam.camera_name is None:
@@ -92,6 +100,11 @@ class TrainingDataExporter:
                     renderer=renderer, body_to_world=camera_to_world_pose,
                 )
                 self._camera_specs[cam.column] = sensor.spec
+                self._postprocess[cam.column] = CameraPostprocess.from_paths(
+                    image_size=cam.image_size,
+                    channel_order=cam.channel_order,
+                    overlay_path=cam.gripper_overlay_path,
+                )
 
         # Pre-resize static / zero images.
         self._cached_images: dict[str, np.ndarray] = {}
@@ -107,11 +120,14 @@ class TrainingDataExporter:
                     )
                 from PIL import Image as _Image
                 img = np.asarray(_Image.open(cam.static_path).convert("RGB"))
-                img = self._resize(img, cam.image_size)
-                # Static images are authored RGB; convert to embodiment channel order.
-                if cam.channel_order == "BGR":
-                    img = img[..., ::-1].copy()
-                self._cached_images[cam.column] = img
+                # Run the static image through the same postprocess as a
+                # live render so channel order + overlay are consistent.
+                pp = CameraPostprocess.from_paths(
+                    image_size=cam.image_size,
+                    channel_order=cam.channel_order,
+                    overlay_path=cam.gripper_overlay_path,
+                )
+                self._cached_images[cam.column] = pp.apply(img)
 
     # ---- public API ----------------------------------------------------
 
@@ -182,10 +198,7 @@ class TrainingDataExporter:
                     spec = self._camera_specs[cam.column]
                     pose = camera_to_world_pose(ds, spec.body_from_camera)
                     rgb, _depth = self.renderer(pose, spec.intrinsics)
-                    rgb = np.asarray(rgb, dtype=np.uint8)
-                    img = self._resize(rgb, cam.image_size)
-                    if cam.channel_order == "BGR":
-                        img = img[..., ::-1]
+                    img = self._postprocess[cam.column].apply(rgb)
                     images[cam.column] = self._encode_png(img)
                 else:
                     images[cam.column] = self._encode_png(self._cached_images[cam.column])
@@ -251,13 +264,11 @@ class TrainingDataExporter:
         positions_ned: np.ndarray,
         yaw_ned: float,
     ) -> np.ndarray:
-        out = np.zeros(self.embodiment.state_dim(), dtype=np.float32)
-        for i, field in enumerate(self.embodiment.state):
-            out[i] = _STATE_GETTERS[field.name](
-                pos_mocap=pos_mocap, yaw_mocap=yaw_mocap,
-                pos_ned=positions_ned, yaw_ned=yaw_ned,
-            )
-        return out
+        return build_state_vector(
+            self.embodiment,
+            pos_mocap=pos_mocap, yaw_mocap=yaw_mocap,
+            pos_ned=positions_ned, yaw_ned=yaw_ned,
+        )
 
     def _action_delta(self, prev: np.ndarray, curr: np.ndarray) -> np.ndarray:
         # Compute deltas in the same indexed layout as ``state``. For yaw
@@ -307,13 +318,6 @@ class TrainingDataExporter:
         )
 
     @staticmethod
-    def _resize(img: np.ndarray, size: int) -> np.ndarray:
-        if img.shape[0] == size and img.shape[1] == size:
-            return img
-        from PIL import Image as _Image
-        return np.asarray(_Image.fromarray(img).resize((size, size), _Image.BILINEAR))
-
-    @staticmethod
     def _encode_png(img: np.ndarray) -> bytes:
         from PIL import Image as _Image
         # PIL.fromarray treats 3-channel uint8 as RGB; since we pre-swapped
@@ -325,32 +329,6 @@ class TrainingDataExporter:
         return buf.getvalue()
 
 
-# ---------------------------------------------------------------------------
-# State-field getters
-# ---------------------------------------------------------------------------
-
-
-def _g_x_mocap(**kw): return float(kw["pos_mocap"][0])
-def _g_y_mocap(**kw): return float(kw["pos_mocap"][1])
-def _g_z_mocap(**kw): return float(kw["pos_mocap"][2])
-def _g_yaw_mocap(**kw): return float(kw["yaw_mocap"])
-def _g_x_ned(**kw): return float(kw["pos_ned"][0])
-def _g_y_ned(**kw): return float(kw["pos_ned"][1])
-def _g_z_ned(**kw): return float(kw["pos_ned"][2])
-def _g_yaw_ned(**kw): return float(kw["yaw_ned"])
-def _g_gripper(**kw): return 0.0   # currently always zero; TODO when gripper sim lands
-def _g_zero(**kw): return 0.0
-
-
-_STATE_GETTERS = {
-    "x_mocap":   _g_x_mocap,
-    "y_mocap":   _g_y_mocap,
-    "z_mocap":   _g_z_mocap,
-    "yaw_mocap": _g_yaw_mocap,
-    "x_ned":     _g_x_ned,
-    "y_ned":     _g_y_ned,
-    "z_ned":     _g_z_ned,
-    "yaw_ned":   _g_yaw_ned,
-    "gripper":   _g_gripper,
-    "zero":      _g_zero,
-}
+# State-field getters live in `falsify.policy.state_assembly.STATE_GETTERS`
+# now — shared with `PiGatewayPolicy` and `VLAPolicy` so a single
+# embodiment YAML drives state assembly in both train and eval pipelines.

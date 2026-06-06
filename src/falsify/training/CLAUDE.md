@@ -122,6 +122,51 @@ for i, run_dir in enumerate(run_dirs):
    `d_<state_field>` pattern work out of the box.
 3. Re-run the CLI with `--embodiment` pointing at the new YAML.
 
+## Per-camera postprocess (`CameraPostprocess`)
+
+Every consumer of a rendered camera image — the exporter here, plus
+`PiGatewayPolicy` and `VLAPolicy` — runs the same three transforms on the
+raw render before handing it downstream:
+
+1. PIL bilinear resize to `image_size`²
+2. Channel swap RGB → BGR (when the embodiment / policy declares
+   `channel_order: "BGR"`)
+3. Composite an optional RGBA gripper overlay (see next section)
+
+These live in `src/falsify/policy/camera_postprocess.py` (`CameraPostprocess`
+dataclass). The exporter builds one instance per `cameras[*]` column at
+init time and calls `pp.apply(rgb)` inside the per-frame render loop. The
+two VLA policies do the same per camera. Train/eval parity is therefore a
+property of the **code**, not of YAML-keeping discipline.
+
+## Gripper overlay
+
+The real downward (wrist) camera always shows the drone's own struts /
+gripper at a static position in the frame. The sim gsplat render has no
+such occlusion. To close the distribution gap, the exporter and policy
+both composite an RGBA PNG onto the final post-resize / post-channel-
+swap downward image.
+
+- Canonical asset: `configs/embodiments/assets/carl_wrist_overlay.png`
+  (256×256 RGBA, soft-edge alpha; see the README in that directory for
+  the build recipe — median + luminance threshold over
+  `data/atomic_datasets/gate_scenes_real_combined`).
+- Embodiment YAML knob: `cameras[*].gripper_overlay_path` (string,
+  optional). Only set on the `wrist_image` entry today.
+- Policy YAML knob (PiGateway + VLA): `gripper_overlay_paths:` is a
+  `{cam_name: path}` map. For every gate-scenes pi_gateway YAML the
+  downward camera points at the same asset the embodiment uses, so the
+  bytes the policy sends at eval are byte-identical to what the
+  exporter wrote at training time.
+- Implementation: `CameraPostprocess.from_paths(image_size,
+  channel_order, overlay_path)` loads the PNG once at consumer init;
+  `apply()` does straight-alpha compositing on the final image. The
+  overlay must already be in the channel order it'll be composited
+  against (typically `BGR`, matching the dataset it was derived from).
+
+If the airframe / camera mount changes, re-derive the overlay against a
+fresh real-data dataset and overwrite the PNG — no code changes needed.
+
 ## Adding a new trajectory producer
 
 1. Write a function returning a `Trajectory`. Convention:

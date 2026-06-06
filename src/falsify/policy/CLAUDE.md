@@ -100,31 +100,43 @@ Variant configs live under `configs/policies/pi_gateway/`.
 
 ### Preprocess parity with the training data
 
-`falsify.training.exporter` writes per-frame PNGs as follows:
-`render at native intrinsics → PIL bilinear resize to cam.image_size →
-RGB → BGR (when embodiment.channel_order == "BGR") → PNG`. The dronevla
-v7 finetunes were trained on `image_size: 256, channel_order: BGR`
-(see `configs/embodiments/carl_dual_mocap.yaml`). The on-disk PNGs hold
-BGR pixels labeled "RGB" — PIL doesn't enforce channel meaning by mode.
+The exporter (`falsify.training.exporter`) and both VLA policies
+(`PiGatewayPolicy`, `VLAPolicy`) share a single per-camera postprocess
+pipeline — `falsify.policy.camera_postprocess.CameraPostprocess` — that
+runs three transforms in order:
 
-To match this at inference, `PiGatewayPolicy` accepts two YAML knobs:
+1. PIL bilinear resize to `image_size`².
+2. Channel swap RGB → BGR (when `channel_order: "BGR"`).
+3. Optional RGBA overlay composite (e.g. the wrist gripper).
 
-| YAML key         | Type / default | Behaviour |
-|------------------|----------------|-----------|
-| `image_size`     | `int \| null` (default `null`) | Pre-server resize: PIL bilinear to (size, size) before sending. |
-| `channel_order`  | `"RGB"` (default) / `"BGR"`    | When `"BGR"`, applies `img[..., ::-1]` before sending. |
+Parity is therefore a property of the code — both consumers call the
+same `.apply(rgb_native)` method. The YAML knobs that drive it:
 
-Both default to "send what the renderer produced" so legacy configs are
-unaffected. **The v7/v9 gate-scenes finetunes require both:**
+| YAML key                  | Type / default | Behaviour |
+|---------------------------|----------------|-----------|
+| `image_size`              | `int \| null` | Resize edge (PIL bilinear). |
+| `channel_order`           | `"RGB"` (default) / `"BGR"` | Whether to flip channels. |
+| `gripper_overlay_paths`   | `{cam_name: path}`, default `{}` | Per-camera RGBA overlay PNG composited last. |
+
+**The v7/v9 gate-scenes finetunes require:**
 
 ```yaml
 image_size: 256
 channel_order: "BGR"
+gripper_overlay_paths:
+  downward: configs/embodiments/assets/carl_wrist_overlay.png
 ```
 
 Set in every gate-scenes YAML under `configs/policies/pi_gateway/`
-(currently nine variants: history + nonhistory base + may19 nonhistory
-+ live center + v9 real / real-synth dagger1).
+(currently twelve variants: history + nonhistory base + may19 nonhistory
++ live center + v9 real / real-synth dagger1 + all-cohort variants).
+The embodiment YAML (`configs/embodiments/carl_dual_mocap.yaml`) sets
+the same overlay path on its `wrist_image` entry, so the exporter and
+each policy YAML produce byte-identical preprocess — verified in
+`tests/test_preprocess_parity.py` over every shipped policy YAML.
+
+See `src/falsify/training/CLAUDE.md § Gripper overlay` for the asset
+build recipe.
 
 Debug bundles (PiGatewayPolicy): each `infer()` call writes to
 `record_dir/query_<NNNN>_step_<KKKKK>/` containing:
