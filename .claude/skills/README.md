@@ -72,6 +72,17 @@ between v7 finetunes, or wiring a falsify-side YAML at a bridge.
 **Stub** = the skill describes the intended interface but the underlying
 code isn't there yet. The body of each stub points to the TODO list.
 
+### Management GUI (`gui/`)
+
+Most of the workflows above are also launchable from the falsify web GUI
+(`gui/.venv/bin/python -m falsify_gui` → http://127.0.0.1:9000): eval
+campaigns (with a sequential GPU queue for sweeps), recovery collection,
+recovery→dataset rendering, dataset combining, training-data export,
+trajectory planning, dataset/runs browsing, bridge checkpoint switching,
+and the viz services. **To add a workflow to the GUI, add one entry to
+`gui/falsify_gui/jobs/definitions.py`** — see `gui/CLAUDE.md` for the
+contract (form schema, argv builder, progress reader, done_marker).
+
 ## Two canonical end-to-end recipes
 
 ### A. "Run a VLA episode, get a parquet"

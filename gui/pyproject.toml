@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falsify-gui"
+version = "0.1.0"
+description = "Local management GUI for the falsify repo: bridge control, job launching, runs browsing, viz."
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pyyaml>=6.0",
+  # numpy + plotly are used only for on-demand trajectory-NPZ plots rendered
+  # inside the GUI's own venv. torch must NEVER appear here — heavy falsify
+  # work runs as subprocesses against the repo-root venv.
+  "numpy>=1.26",
+  "plotly>=5.20",
+  # dataset browser: reads LeRobot parquets (embedded PNG bytes + state/action)
+  "pyarrow>=15",
+]
+
+[project.scripts]
+falsify-gui = "falsify_gui.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["falsify_gui*"]

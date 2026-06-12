@@ -71,6 +71,16 @@ pi_local_bridge/      Self-hosted WSS server that speaks pi-inference-client's
                       keeping the falsify-side PiGatewayPolicy unchanged.
                       Separate pyproject so the JAX [local] extras stay out
                       of the falsify venv.
+
+gui/                  Local web GUI (FastAPI + vanilla JS, own venv like
+                      pi_local_bridge) that manages the repo's workflows:
+                      job launcher/monitor for the eval/recovery/export/
+                      planning CLIs (subprocesses under tools/env.sh — the
+                      GUI never imports falsify), runs/ artifact browser
+                      with embedded Plotly HTMLs, bridge checkpoint-switch
+                      panel, and viz-service lifecycle (ns-viewer, mask
+                      painter). Adding a workflow = one entry in
+                      gui/falsify_gui/jobs/definitions.py. See gui/README.md.
 ```
 
 **Sensor decoupling.** Policies declare `required_modalities`; the orchestrator

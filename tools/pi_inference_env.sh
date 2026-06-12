@@ -49,8 +49,15 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Pi gateway API key (runtime credential).
 # ---------------------------------------------------------------------------
-# Set $PI_API_KEY in your shell rc (or pass it through some other secret
-# store). Policy YAMLs reference it via `${env:PI_API_KEY}`.
+# Lives in tools/secrets.env (gitignored), sourced here so it survives shell
+# restarts. Policy YAMLs reference it via `${env:PI_API_KEY}`; falsify-gui
+# reads the same file at startup.
+
+_FALSIFY_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
+if [ -f "$_FALSIFY_TOOLS_DIR/secrets.env" ]; then
+  . "$_FALSIFY_TOOLS_DIR/secrets.env"
+fi
+unset _FALSIFY_TOOLS_DIR
 
 if [ -z "${PI_API_KEY:-}" ]; then
   echo "[pi_inference_env] note: PI_API_KEY is unset — gateway connections will fail." >&2

@@ -14,6 +14,10 @@ runs/
 # See README for layout expectations.
 /data
 
+# Local secrets (PI_API_KEY etc.) — sourced by tools/pi_inference_env.sh
+# and auto-loaded by falsify-gui. Never commit.
+/tools/secrets.env
+
 # Transient Pi-gateway YAMLs (`live_*.yaml`) hold endpoint quirks of
 # whatever bridge is *currently* running — host-specific stopgaps until
 # moraband restarts on the multi-policy bridge, at which point the
