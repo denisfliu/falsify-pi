@@ -181,6 +181,7 @@ function jobsTab(main) {
       el("h2", {}, "Launch"),
       el("label", {}, "Job type"), typeSelect, typeDesc, formFields, launchBtn, launchMsg),
     el("div", { class: "flex1" },
+      bridgePanel(),
       el("div", { class: "panel" },
         el("h2", {}, "Jobs"),
         el("table", {},
@@ -559,7 +560,7 @@ function datasetsTab(main) {
   loadSidebar();
 }
 
-/* ----------------------------------------------------------- bridge tab */
+/* ------------------------------------------- bridge panel (jobs page) */
 
 async function gpuJobRunning() {
   const jobs = await api("/jobs?status=running");
@@ -568,15 +569,15 @@ async function gpuJobRunning() {
   return j ? j.id : null;
 }
 
-function bridgeTab(main) {
-  main.replaceChildren(el("div", { class: "panel" }, "loading bridge state…"));
+function bridgePanel() {
+  const box = el("div", { class: "panel" }, "loading bridge state…");
 
   async function refresh() {
     let d;
     try { d = await api("/bridge/policies"); }
     catch (e) { d = { reachable: false, error: e.message }; }
     if (!d.reachable) {
-      main.replaceChildren(
+      box.replaceChildren(
         el("div", { class: "banner" },
           `bridge offline / unreachable: ${d.error || "?"}`,
           d.key_present === false ? " — no API key in the GUI server env (set PI_BRIDGE_API_KEYS or PI_API_KEY before starting falsify-gui)" : ""),
@@ -605,16 +606,18 @@ function bridgeTab(main) {
         el("td", { class: "muted" }, tr.notes || ""),
         el("td", {}, switchBtn));
     });
-    main.replaceChildren(el("div", { class: "panel" },
-      el("h2", {}, "Bridge ", el("code", {}, d.admin_url),
+    box.replaceChildren(el("details", {},
+      el("summary", {}, "Bridge ", el("code", {}, d.admin_url),
         " — active: ", el("code", {}, d.active_policy_id || "?"),
-        " ", el("button", { class: "secondary", onclick: refresh }, "Refresh")),
+        " ", el("button", { class: "secondary",
+          onclick: ev => { ev.preventDefault(); refresh(); } }, "Refresh")),
       el("table", {},
         el("thead", {}, el("tr", {}, el("th", {}, "policy id"), el("th", {}, "yaml"),
           el("th", {}, "variant"), el("th", {}, "notes"), el("th", {}, ""))),
         el("tbody", {}, ...rows))));
   }
   refresh();
+  return box;
 }
 
 /* -------------------------------------------------------------- viz tab */
@@ -722,7 +725,6 @@ const TABS = {
   jobs: jobsTab,
   runs: runsTab,
   datasets: datasetsTab,
-  bridge: bridgeTab,
   viz: vizTab,
 };
 

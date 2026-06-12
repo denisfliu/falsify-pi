@@ -41,7 +41,7 @@ file. The relevant keys:
 - `PI_API_KEY` — inherited by launched jobs; policy YAMLs resolve
   `${env:PI_API_KEY}` for gateway connections. Without it, pi_gateway jobs
   fail their handshake.
-- `PI_BRIDGE_API_KEYS` — used by the Bridge tab's admin proxy
+- `PI_BRIDGE_API_KEYS` — used by the bridge panel (Jobs page) admin proxy
   (`Authorization: Api-Key <first entry>`); falls back to `PI_API_KEY`.
 - `FALSIFY_GUI_BRIDGE_URL` — override the bridge admin URL (default: the
   most common `bridge_admin_url` across `configs/policies/pi_gateway/`).
