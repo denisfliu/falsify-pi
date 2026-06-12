@@ -27,7 +27,7 @@ def script_helpers():
     the same functions the extracted module exposes."""
     name = "_gen_bundles_mod"
     spec = importlib.util.spec_from_file_location(
-        name, REPO_ROOT / "scripts" / "generate_eval_bundles.py",
+        name, REPO_ROOT / "scripts" / "eval" / "generate_eval_bundles.py",
     )
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod

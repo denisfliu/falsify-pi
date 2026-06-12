@@ -42,6 +42,11 @@ def run_episode(
 7. Reset the simulator. Roll out under the detector. On failure, the detector returns a `FailureRecord` with both `last_safe_state` and the full `safe_history`.
 8. If recovery is wired and the failure type is in `recovery_triggers`, the orchestrator picks a seed via `sample_recovery_seed(safe_history, failure_type, rng, ...)` and the planner produces a `Trajectory[ned]` from `seed → goal`. The picked-seed metadata is persisted under `FalsificationEpisode.metadata["recovery_seed"]`.
 9. Bundle everything into a `FalsificationEpisode`.
+10. **Always** (success or exception) call `policy.close()` if the policy
+    defines it — the policy object never escapes `run_episode`, and
+    `PiGatewayPolicy`'s gateway WS / RTC threads are non-daemon: leaking
+    them keeps the interpreter alive after a campaign script's `main()`
+    returns (the "script never exits" hang fixed 2026-06-12).
 
 ## Why factories instead of objects
 

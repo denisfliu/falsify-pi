@@ -203,205 +203,219 @@ def run_episode(
     goal = goal_in_ned(cfg.scene_cfg, frame_graph)
 
     policy = policy_factory(goal, cfg.episode_cfg.get("policy", {}))
+    try:
 
-    # `renderer` may be a callable (the legacy `.render` callable) or the
-    # GSplatRenderer object itself — env perturbations need the object so
-    # they can mutate the live gsplat (`apply_dynamic_edits`). Detect and
-    # split here so sensor wiring keeps receiving the callable.
-    render_callable = renderer
-    renderer_obj = None
-    if renderer is not None and not callable(renderer):
-        renderer_obj = renderer
-        render_callable = renderer.render
-    elif renderer is not None and hasattr(renderer, "apply_dynamic_edits"):
-        # Object that's also callable (unlikely but possible) — keep both refs.
-        renderer_obj = renderer
+        # `renderer` may be a callable (the legacy `.render` callable) or the
+        # GSplatRenderer object itself — env perturbations need the object so
+        # they can mutate the live gsplat (`apply_dynamic_edits`). Detect and
+        # split here so sensor wiring keeps receiving the callable.
+        render_callable = renderer
+        renderer_obj = None
+        if renderer is not None and not callable(renderer):
+            renderer_obj = renderer
+            render_callable = renderer.render
+        elif renderer is not None and hasattr(renderer, "apply_dynamic_edits"):
+            # Object that's also callable (unlikely but possible) — keep both refs.
+            renderer_obj = renderer
 
-    sensor_rig = build_sensor_rig(
-        policy.required_modalities,
-        frame_graph=frame_graph,
-        frame_cfg=cfg.frame_cfg,
-        renderer=render_callable,
-        body_to_world=camera_to_world_pose,
-        prompt=cfg.scene_cfg.get("prompt"),
-    )
+        sensor_rig = build_sensor_rig(
+            policy.required_modalities,
+            frame_graph=frame_graph,
+            frame_cfg=cfg.frame_cfg,
+            renderer=render_callable,
+            body_to_world=camera_to_world_pose,
+            prompt=cfg.scene_cfg.get("prompt"),
+        )
 
-    sim_cfg = SimulatorConfig(
-        hz=int(cfg.episode_cfg.get("hz", 10)),
-        horizon_s=float(cfg.episode_cfg.get("horizon_s", 5.0)),
-        policy_hz=int(cfg.episode_cfg.get("policy_hz", 1)),
-        chunk_steps=(
-            int(cfg.episode_cfg["chunk_steps"])
-            if cfg.episode_cfg.get("chunk_steps") is not None else None
-        ),
-    )
-    sim = Simulator(sim_cfg, frame_graph)
-    sim.reset(initial_state)
+        sim_cfg = SimulatorConfig(
+            hz=int(cfg.episode_cfg.get("hz", 10)),
+            horizon_s=float(cfg.episode_cfg.get("horizon_s", 5.0)),
+            policy_hz=int(cfg.episode_cfg.get("policy_hz", 1)),
+            chunk_steps=(
+                int(cfg.episode_cfg["chunk_steps"])
+                if cfg.episode_cfg.get("chunk_steps") is not None else None
+            ),
+        )
+        sim = Simulator(sim_cfg, frame_graph)
+        sim.reset(initial_state)
 
-    # Perturbations are constructed + reset *before* the detector so that
-    # safety criteria can read the perturbation's resolved deltas (e.g.
-    # GateRigidPerturbation's Δxyz/Δyaw) and transform aperture corners /
-    # collision PLYs to match the moved gate Gaussians. Without this
-    # ordering a gate-jitter trial would check against the un-moved
-    # aperture and the miss-gate criterion would be wrong.
-    perturbations = None
-    if perturbations_factory is not None:
-        # Inject the parsed scene_cfg so env perturbations (e.g.
-        # `GateRigidPerturbation`) can read `gate_region:` at construction.
-        pert_cfg = dict(cfg.episode_cfg.get("perturbations", {}))
-        pert_cfg.setdefault("scene_cfg", cfg.scene_cfg)
-        # Trial-card / replay path: pass absolute per-perturbation overrides
-        # (keyed by perturbation name) into the factory so the suite can
-        # bypass its own RNG sampling.
-        if perturbation_overrides is not None:
-            pert_cfg["overrides"] = perturbation_overrides
-        perturbations = perturbations_factory(frame_graph, pert_cfg)
-        perturbations.reset()
-        if renderer_obj is not None:
-            perturbations.apply_environment(renderer_obj)
-        elif perturbations.environment_perts:
-            raise ValueError(
-                "Perturbation suite has environment perturbations but no "
-                "renderer object was provided to run_episode. Pass the "
-                "GSplatRenderer instance (not just its .render method)."
-            )
-
-    detector = None
-    # Compute gate_deltas once — used both by the safety layer (collision
-    # PLYs + aperture corners follow the moved gate) and by the post-hoc
-    # classifier (gate AABB is transported through the same Δ).
-    gate_deltas = _extract_gate_deltas(perturbations)
-    if detector_factory is not None:
-        safety_cfg = dict(cfg.episode_cfg.get("safety", {}))
-        if gate_deltas is not None:
-            safety_cfg["_gate_deltas"] = gate_deltas
-        detector = detector_factory(frame_graph, safety_cfg)
-
-    trace = sim.rollout_with_policy(
-        policy, sensor_rig, detector=detector, perturbations=perturbations,
-    )
-
-    recovery_traj: Optional[Trajectory] = None
-    recovery_trace: Optional[EpisodeTrace] = None
-    recovery_seed_info: Optional[dict] = None
-    if trace.failure is not None and recovery_factory is not None:
-        # Optional failure-type filter: if recovery_triggers is set, skip
-        # recovery for failure types outside it (e.g. don't recover from
-        # EXCESSIVE_VELOCITY / EXCESSIVE_TILT — those are sim instabilities,
-        # not falsifications).
-        if (recovery_triggers is None
-                or trace.failure.failure_type in recovery_triggers):
-            planner = recovery_factory(frame_graph, cfg.episode_cfg.get("recovery", {}))
-            # Choose the recovery seed from the detector's full safe-state
-            # history with a failure-type bias (early for miss-gate / non-gate
-            # collisions; late for gate clips). Falls back to last_safe if
-            # the history is empty (very early failure) or no rng provided.
-            from falsify.recovery import sample_recovery_seed, bias_for
-            seed_rng = rng if rng is not None else np.random.default_rng(0)
-            history = trace.failure.safe_history
-            # MissGateCriterion stamps `transit_time` into Violation.extra
-            # when GOAL_NOT_REACHED fires; OrderedMissGateCriterion
-            # additionally stamps `transit_time_1` on every post-gate-1
-            # stuck / goal-reached violation. The detector merges both
-            # into FailureRecord.extra. Pass them through so the sampler
-            # can scope the draw appropriately.
-            transit_time = trace.failure.extra.get("transit_time")
-            # Prefer the AABB-EXIT time over the entry time so the
-            # sampler scopes to states where the drone has actually
-            # cleared gate-1 (not mid-transit inside the AABB). Falls
-            # back to entry time if exit wasn't recorded (rare — drone
-            # got stuck inside the AABB without exiting).
-            gate_1_transit_time = (
-                trace.failure.extra.get("transit_time_1_exit")
-                or trace.failure.extra.get("transit_time_1")
-            )
-            # Compositional phase ("pre_gate_1", "between_gates",
-            # "post_gate_2") drives a few sampler overrides — e.g.
-            # COLLISION_GATE-pre_gate_1 → bias-early.
-            failure_phase_for_seed = trace.failure.extra.get("phase")
-            # Between-gates with no legitimate aperture-transit recorded
-            # means the drone clipped past gate_1 (AABB-latched but
-            # never threaded the aperture). The stuck-check still
-            # classifies it as between_gates (geographically past gate_1)
-            # but `_transit_t_1*` are null. Fall back to the plane-cross
-            # time so the seed isn't sampled from before gate_1.
-            if (failure_phase_for_seed == "between_gates"
-                    and gate_1_transit_time is None):
-                gate_1_transit_time = trace.failure.extra.get("first_plane_cross_t_1")
-            # When the failure happened BEFORE legitimately transiting
-            # the active gate but the drone has already crossed that
-            # gate's plane (clipped past outside the aperture), scope
-            # the seed sampling to BEFORE the bypass — otherwise the
-            # planner has to reverse the bypass and re-cross, which
-            # produces the "doubles back" pathology. Selects which
-            # gate's plane to use from the failure_phase.
-            pre_gate_bypass_time = None
-            if failure_phase_for_seed == "pre_gate_1":
-                pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_1")
-            elif failure_phase_for_seed == "between_gates":
-                pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_2")
-            if history:
-                seed_step, seed_state = sample_recovery_seed(
-                    history, trace.failure.failure_type, seed_rng,
-                    transit_time=transit_time,
-                    gate_1_transit_time=gate_1_transit_time,
-                    failure_phase=failure_phase_for_seed,
-                    pre_gate_bypass_time=pre_gate_bypass_time,
+        # Perturbations are constructed + reset *before* the detector so that
+        # safety criteria can read the perturbation's resolved deltas (e.g.
+        # GateRigidPerturbation's Δxyz/Δyaw) and transform aperture corners /
+        # collision PLYs to match the moved gate Gaussians. Without this
+        # ordering a gate-jitter trial would check against the un-moved
+        # aperture and the miss-gate criterion would be wrong.
+        perturbations = None
+        if perturbations_factory is not None:
+            # Inject the parsed scene_cfg so env perturbations (e.g.
+            # `GateRigidPerturbation`) can read `gate_region:` at construction.
+            pert_cfg = dict(cfg.episode_cfg.get("perturbations", {}))
+            pert_cfg.setdefault("scene_cfg", cfg.scene_cfg)
+            # Trial-card / replay path: pass absolute per-perturbation overrides
+            # (keyed by perturbation name) into the factory so the suite can
+            # bypass its own RNG sampling.
+            if perturbation_overrides is not None:
+                pert_cfg["overrides"] = perturbation_overrides
+            perturbations = perturbations_factory(frame_graph, pert_cfg)
+            perturbations.reset()
+            if renderer_obj is not None:
+                perturbations.apply_environment(renderer_obj)
+            elif perturbations.environment_perts:
+                raise ValueError(
+                    "Perturbation suite has environment perturbations but no "
+                    "renderer object was provided to run_episode. Pass the "
+                    "GSplatRenderer instance (not just its .render method)."
                 )
-            else:
-                seed_step = trace.failure.last_safe_step
-                seed_state = trace.failure.last_safe_state
-            # Diagnostic counts for the scope window the sampler actually
-            # used. n_post_transit covers the GOAL_NOT_REACHED scope;
-            # n_post_gate_1 covers the compositional post-gate-1 scope.
-            n_post_transit = (
-                sum(1 for _, st in history
-                    if transit_time is not None and float(st.t) >= float(transit_time))
-                if transit_time is not None else None
-            )
-            n_post_gate_1 = (
-                sum(1 for _, st in history
-                    if (gate_1_transit_time is not None
-                        and float(st.t) >= float(gate_1_transit_time)))
-                if gate_1_transit_time is not None else None
-            )
-            recovery_seed_info = {
-                "step": int(seed_step),
-                "bias": bias_for(trace.failure.failure_type,
-                                 failure_phase=failure_phase_for_seed),
-                "n_safe": len(history),
-                "transit_time": transit_time,
-                "gate_1_transit_time": gate_1_transit_time,
-                "failure_phase": failure_phase_for_seed,
-                "n_post_transit": n_post_transit,
-                "n_post_gate_1": n_post_gate_1,
-            }
-            # Compositional courses trim themselves when the failure's
-            # phase indicates the seed is past one of the named gates.
-            # Single-gate planners (SplatNav, etc.) that don't accept
-            # the kwarg silently fall back to the un-trimmed plan.
-            failure_phase = trace.failure.extra.get("phase")
+
+        detector = None
+        # Compute gate_deltas once — used both by the safety layer (collision
+        # PLYs + aperture corners follow the moved gate) and by the post-hoc
+        # classifier (gate AABB is transported through the same Δ).
+        gate_deltas = _extract_gate_deltas(perturbations)
+        if detector_factory is not None:
+            safety_cfg = dict(cfg.episode_cfg.get("safety", {}))
+            if gate_deltas is not None:
+                safety_cfg["_gate_deltas"] = gate_deltas
+            detector = detector_factory(frame_graph, safety_cfg)
+
+        trace = sim.rollout_with_policy(
+            policy, sensor_rig, detector=detector, perturbations=perturbations,
+        )
+
+        recovery_traj: Optional[Trajectory] = None
+        recovery_trace: Optional[EpisodeTrace] = None
+        recovery_seed_info: Optional[dict] = None
+        if trace.failure is not None and recovery_factory is not None:
+            # Optional failure-type filter: if recovery_triggers is set, skip
+            # recovery for failure types outside it (e.g. don't recover from
+            # EXCESSIVE_VELOCITY / EXCESSIVE_TILT — those are sim instabilities,
+            # not falsifications).
+            if (recovery_triggers is None
+                    or trace.failure.failure_type in recovery_triggers):
+                planner = recovery_factory(frame_graph, cfg.episode_cfg.get("recovery", {}))
+                # Choose the recovery seed from the detector's full safe-state
+                # history with a failure-type bias (early for miss-gate / non-gate
+                # collisions; late for gate clips). Falls back to last_safe if
+                # the history is empty (very early failure) or no rng provided.
+                from falsify.recovery import sample_recovery_seed, bias_for
+                seed_rng = rng if rng is not None else np.random.default_rng(0)
+                history = trace.failure.safe_history
+                # MissGateCriterion stamps `transit_time` into Violation.extra
+                # when GOAL_NOT_REACHED fires; OrderedMissGateCriterion
+                # additionally stamps `transit_time_1` on every post-gate-1
+                # stuck / goal-reached violation. The detector merges both
+                # into FailureRecord.extra. Pass them through so the sampler
+                # can scope the draw appropriately.
+                transit_time = trace.failure.extra.get("transit_time")
+                # Prefer the AABB-EXIT time over the entry time so the
+                # sampler scopes to states where the drone has actually
+                # cleared gate-1 (not mid-transit inside the AABB). Falls
+                # back to entry time if exit wasn't recorded (rare — drone
+                # got stuck inside the AABB without exiting).
+                gate_1_transit_time = (
+                    trace.failure.extra.get("transit_time_1_exit")
+                    or trace.failure.extra.get("transit_time_1")
+                )
+                # Compositional phase ("pre_gate_1", "between_gates",
+                # "post_gate_2") drives a few sampler overrides — e.g.
+                # COLLISION_GATE-pre_gate_1 → bias-early.
+                failure_phase_for_seed = trace.failure.extra.get("phase")
+                # Between-gates with no legitimate aperture-transit recorded
+                # means the drone clipped past gate_1 (AABB-latched but
+                # never threaded the aperture). The stuck-check still
+                # classifies it as between_gates (geographically past gate_1)
+                # but `_transit_t_1*` are null. Fall back to the plane-cross
+                # time so the seed isn't sampled from before gate_1.
+                if (failure_phase_for_seed == "between_gates"
+                        and gate_1_transit_time is None):
+                    gate_1_transit_time = trace.failure.extra.get("first_plane_cross_t_1")
+                # When the failure happened BEFORE legitimately transiting
+                # the active gate but the drone has already crossed that
+                # gate's plane (clipped past outside the aperture), scope
+                # the seed sampling to BEFORE the bypass — otherwise the
+                # planner has to reverse the bypass and re-cross, which
+                # produces the "doubles back" pathology. Selects which
+                # gate's plane to use from the failure_phase.
+                pre_gate_bypass_time = None
+                if failure_phase_for_seed == "pre_gate_1":
+                    pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_1")
+                elif failure_phase_for_seed == "between_gates":
+                    pre_gate_bypass_time = trace.failure.extra.get("first_plane_cross_t_2")
+                if history:
+                    seed_step, seed_state = sample_recovery_seed(
+                        history, trace.failure.failure_type, seed_rng,
+                        transit_time=transit_time,
+                        gate_1_transit_time=gate_1_transit_time,
+                        failure_phase=failure_phase_for_seed,
+                        pre_gate_bypass_time=pre_gate_bypass_time,
+                    )
+                else:
+                    seed_step = trace.failure.last_safe_step
+                    seed_state = trace.failure.last_safe_state
+                # Diagnostic counts for the scope window the sampler actually
+                # used. n_post_transit covers the GOAL_NOT_REACHED scope;
+                # n_post_gate_1 covers the compositional post-gate-1 scope.
+                n_post_transit = (
+                    sum(1 for _, st in history
+                        if transit_time is not None and float(st.t) >= float(transit_time))
+                    if transit_time is not None else None
+                )
+                n_post_gate_1 = (
+                    sum(1 for _, st in history
+                        if (gate_1_transit_time is not None
+                            and float(st.t) >= float(gate_1_transit_time)))
+                    if gate_1_transit_time is not None else None
+                )
+                recovery_seed_info = {
+                    "step": int(seed_step),
+                    "bias": bias_for(trace.failure.failure_type,
+                                     failure_phase=failure_phase_for_seed),
+                    "n_safe": len(history),
+                    "transit_time": transit_time,
+                    "gate_1_transit_time": gate_1_transit_time,
+                    "failure_phase": failure_phase_for_seed,
+                    "n_post_transit": n_post_transit,
+                    "n_post_gate_1": n_post_gate_1,
+                }
+                # Compositional courses trim themselves when the failure's
+                # phase indicates the seed is past one of the named gates.
+                # Single-gate planners (SplatNav, etc.) that don't accept
+                # the kwarg silently fall back to the un-trimmed plan.
+                failure_phase = trace.failure.extra.get("phase")
+                try:
+                    result = planner.plan(
+                        seed_state.pos, goal, failure_phase=failure_phase,
+                    )
+                except TypeError:
+                    # Planner doesn't accept `failure_phase` — call legacy signature.
+                    result = planner.plan(seed_state.pos, goal)
+                recovery_traj = result.trajectory
+
+        return FalsificationEpisode(
+            scene_cfg=cfg.scene_cfg,
+            frame_cfg=cfg.frame_cfg,
+            episode_cfg=cfg.episode_cfg,
+            trace=trace,
+            goal=goal,
+            failure=trace.failure,
+            recovery_trajectory=recovery_traj,
+            recovery_trace=recovery_trace,
+            metadata={
+                "perturbations": perturbations.manifest() if perturbations is not None else None,
+                "recovery_seed": recovery_seed_info,
+                "gate_deltas": gate_deltas,
+            },
+        )
+    finally:
+        # Policies that own live connections (PiGatewayPolicy's gateway WS +
+        # RTC runner threads) must be torn down deterministically here: the
+        # policy object never escapes run_episode, and leaked non-daemon
+        # client threads otherwise keep the interpreter alive after a
+        # campaign/collection script's main() returns (the "script never
+        # exits" hang). The `return` above runs through this finally.
+        close = getattr(policy, "close", None)
+        if callable(close):
             try:
-                result = planner.plan(
-                    seed_state.pos, goal, failure_phase=failure_phase,
-                )
-            except TypeError:
-                # Planner doesn't accept `failure_phase` — call legacy signature.
-                result = planner.plan(seed_state.pos, goal)
-            recovery_traj = result.trajectory
-
-    return FalsificationEpisode(
-        scene_cfg=cfg.scene_cfg,
-        frame_cfg=cfg.frame_cfg,
-        episode_cfg=cfg.episode_cfg,
-        trace=trace,
-        goal=goal,
-        failure=trace.failure,
-        recovery_trajectory=recovery_traj,
-        recovery_trace=recovery_trace,
-        metadata={
-            "perturbations": perturbations.manifest() if perturbations is not None else None,
-            "recovery_seed": recovery_seed_info,
-            "gate_deltas": gate_deltas,
-        },
-    )
+                close()
+            except Exception:
+                pass

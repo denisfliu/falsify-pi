@@ -26,7 +26,7 @@ def _load_runner_module():
     a full package layout."""
     name = "_run_eval_campaign_mod"
     spec = importlib.util.spec_from_file_location(
-        name, REPO_ROOT / "scripts" / "run_eval_campaign.py",
+        name, REPO_ROOT / "scripts" / "eval" / "run_eval_campaign.py",
     )
     mod = importlib.util.module_from_spec(spec)
     # Register before exec so the @dataclass machinery can resolve
