@@ -56,7 +56,19 @@ chord-length between set values; missing `yaw`s resolve per `yaw_mode`.
 - `load_course(path) -> Course`, `save_course(course, path) -> Path`
 - `plan_spline(course, frame_graph, *, prompt="") -> Trajectory`
   (returns ``falsify.training.Trajectory``). Geometric cubic spline
-  through the waypoint positions; fast (~ms); no dynamics.
+  through the waypoint positions; fast (~ms); no dynamics. **Attitude is
+  yaw-only (zero roll/pitch)** — the rendered camera never banks, so
+  prefer `plan_mpc` for anything that becomes training data; the spline
+  is for quick geometry checks.
+- `validate_trajectory(traj, frame_graph, *, scene_cfg, scene_dir,
+  safety_cfg, gate_deltas=None) -> ValidationResult` — steps every
+  trajectory sample through the rollout detector's bounds/speed/tilt/
+  collision criteria (miss-gate latching stripped). `gate_deltas` shifts
+  the collision clouds for perturbed-gate trials. Used by
+  `cli.plan_trajectory` (refuses to write a violating NPZ; exit 2) and
+  by the recovery harvest in
+  `scripts/recovery/collect_recovery_trajectories.py` (rejects
+  recoveries that clip the scene before they reach `recoveries/`).
 - `plan_mpc(course, frame_graph, *, prompt="", start_state_ned=None,
   total_time_s=None, hz=None, policy_cfg=None, frame_cfg=None,
   use_rti=True) -> Trajectory`. Builds a `figs.tsplines.min_time_snap`

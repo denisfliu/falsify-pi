@@ -23,15 +23,21 @@ class Job:
     out_dir: str | None            # primary artifact dir/file, repo-relative when possible
     url: str | None                # services: user-facing URL
     label: str = ""
-    # on-success chain: [{"type": ..., "args": {...}}, ...]; "$out_dir" in an
-    # arg value is replaced with this job's out_dir when the child launches
+    # chain: [{"type", "args", "always"?}, ...] — next step launches when
+    # this job succeeds (or fails, if the entry sets "always"). Arg values
+    # support "$out_dir" (parent's out dir) and "$nparquets(<dir>)" (count
+    # of parquets under dir at launch time).
     chain: list = field(default_factory=list)
+    # workflow grouping: all jobs expanded from one preset share these
+    group_id: str | None = None
+    group_label: str = ""
 
     def to_row(self) -> tuple:
         return (self.id, self.type, self.kind, json.dumps(self.form_args),
                 json.dumps(self.argv), self.status, self.pid, self.pid_starttime,
                 self.created_at, self.ended_at, self.exit_code, self.log_path,
-                self.out_dir, self.url, self.label, json.dumps(self.chain))
+                self.out_dir, self.url, self.label, json.dumps(self.chain),
+                self.group_id, self.group_label)
 
     @classmethod
     def from_row(cls, row: tuple) -> "Job":
@@ -41,7 +47,8 @@ class Job:
                    created_at=row[8], ended_at=row[9], exit_code=row[10],
                    log_path=row[11], out_dir=row[12], url=row[13],
                    label=row[14] or "",
-                   chain=json.loads(row[15]) if row[15] else [])
+                   chain=json.loads(row[15]) if row[15] else [],
+                   group_id=row[16], group_label=row[17] or "")
 
     def to_dict(self) -> dict:
         return asdict(self)

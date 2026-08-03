@@ -81,6 +81,14 @@ def main(argv: list[str] | None = None) -> int:
                              "clip threshold. Default in gsplat 0.1.13 is 0.01; "
                              "set lower (e.g. 0.001) to keep close-up gaussians "
                              "in the render when the camera flies near geometry.")
+    parser.add_argument("--no-gripper-overlay", action="store_true",
+                        help="Strip the wrist-cam gripper overlay from this "
+                             "export regardless of what the embodiment YAML "
+                             "declares. Renders still get resized + BGR-"
+                             "swapped per the embodiment; only the final "
+                             "alpha-composite step is skipped. Use for "
+                             "ablation datasets that test policy sensitivity "
+                             "to the overlay.")
     args = parser.parse_args(argv)
 
     # Lazy imports — heavy.
@@ -96,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     scene_cfg = load_yaml(args.scene)
     frame_cfg = load_yaml(args.frame)
     embodiment = load_embodiment(args.embodiment)
+    if args.no_gripper_overlay:
+        from dataclasses import replace
+        embodiment = replace(embodiment, cameras=tuple(
+            replace(c, gripper_overlay_path=None) for c in embodiment.cameras
+        ))
+        print("[export] --no-gripper-overlay set: stripping wrist overlay")
     scene_dir = args.scene.parent
     fg = build_frame_graph(scene_cfg, base_path=scene_dir)
 

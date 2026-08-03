@@ -22,8 +22,14 @@
   same content but as `.ply` files for MeshLab / open3d / blender.
   Use during waypoint authoring (see
   `.claude/skills/falsify-author-waypoints`).
-- `plan_trajectory.py` — Course YAML → Trajectory NPZ via the
-  spline planner (default; `--planner mpc/splatnav` stubs for future).
+- `plan_trajectory.py` — Course YAML → Trajectory NPZ via `--planner
+  spline` (CLI default; kinematic, yaw-only attitude) or `--planner mpc`
+  (dynamically feasible; preferred for training data — the GUI defaults
+  to it). Every plan is validated against
+  `configs/safety/<scene-stem>.yaml` (bounds/speed/tilt + drone-OBB
+  collision) before the NPZ is written; violations exit 2 without
+  saving (`--allow-invalid` / `--no-validate` to override, `--safety`
+  to point at a different YAML).
 - `perturb_course.py` — generate variant course YAMLs (center / up /
   down / left / right of one waypoint). Used for corrective-maneuver
   dataset generation; see `.claude/skills/falsify-perturb-course`.
@@ -74,7 +80,11 @@
   handshake runs lazily inside `PiGatewayPolicy._ensure_connected` and
   includes a `/admin/switch_policy` call when the YAML names a bridge.
   Runs one episode at `--hz` with chunks of `--actions-per-chunk`
-  waypoints. Writes the following under `--out`:
+  waypoints. `--action-space {delta,absolute}` (OpenPI backend) selects how
+  the server's action columns are interpreted — `delta` (default;
+  SousVide-era) integrates per-step MOCAP deltas, `absolute` treats them as
+  absolute MOCAP targets re-anchored to the current pose (gate-drone pi0
+  finetunes; see `tools/gate_pi0/`). Writes the following under `--out`:
   `frames/combined_<frame>.ply` (trajectory + scene clouds),
   `flythrough.mp4` (forward-camera renders along the flown path),
   `vla_io/query_*` (per-query VLA inputs/outputs),

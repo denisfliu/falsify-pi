@@ -91,9 +91,17 @@ gui/data/           runtime state: jobs.db, per-job logs, HTML caches (gitignore
   accepts `override=true` to run anyway. Jobs started from terminals are
   invisible to this guard.
 - On-success **chains**: POST /api/jobs accepts `chain: [{type, args}]`;
-  `"$out_dir"` in chained args is replaced with the parent's output dir.
-  The UI exposes one preset: a succeeded recovery collection offers
-  "Render recoveries → dataset" prefilled.
+  `"$out_dir"` in chained args is replaced with the parent's output dir,
+  and `"$nparquets(<dir>)"` with the parquet count at launch time. The UI
+  exposes one preset: a succeeded recovery collection offers "Render
+  recoveries → dataset" prefilled.
+- **Workflow presets** (⛓ in the launcher): `Eval sweep` (policies ×
+  scenarios → queued campaigns → comparison grid; cells independent) and
+  `DAgger data build` (per scene: collect recoveries → perturbation-aware
+  render; then combine into one dataset; halts on first failure).
+  Conventions (out-dir naming, scene-stem config matching, defaults) live
+  in `falsify_gui/conventions.py` — see gui/CLAUDE.md. Single campaign
+  launches auto-generate missing bundles.
 - Campaign/collection out-dirs that the scripts auto-generate are discovered
   from the `[campaign] out=` / `[collect] out=` log lines.
 - Service ports are only checked against other GUI-launched services, not

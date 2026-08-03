@@ -52,23 +52,30 @@ def _read_tasks(jsonl_path: Path) -> list[tuple[int, str]]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--datasets-dir", default="data/atomic_datasets", type=Path)
+    ap.add_argument("--datasets-dir", action="append", type=Path, default=None,
+                    help="Dataset root(s) to walk; repeatable. Default: "
+                         "data/atomic_datasets. Pass the archive dir too "
+                         "while legacy prompts are still needed for "
+                         "legacy-checkpoint evals.")
     ap.add_argument("--out", default="configs/prompts/atomic_dataset_prompts.yaml", type=Path)
     args = ap.parse_args(argv)
+    datasets_dirs = args.datasets_dir or [Path("data/atomic_datasets")]
 
-    if not args.datasets_dir.is_dir():
-        print(f"ERROR: {args.datasets_dir} not found", file=sys.stderr)
-        return 2
+    for d in datasets_dirs:
+        if not d.is_dir():
+            print(f"ERROR: {d} not found", file=sys.stderr)
+            return 2
 
     # dataset_name → [(task_index, task), ...]
     raw: dict[str, list[tuple[int, str]]] = {}
-    for sub in sorted(args.datasets_dir.iterdir()):
-        if not sub.is_dir():
-            continue
-        tasks_jsonl = sub / "meta" / "tasks.jsonl"
-        if not tasks_jsonl.is_file():
-            continue
-        raw[sub.name] = _read_tasks(tasks_jsonl)
+    for datasets_dir in datasets_dirs:
+        for sub in sorted(datasets_dir.iterdir()):
+            if not sub.is_dir():
+                continue
+            tasks_jsonl = sub / "meta" / "tasks.jsonl"
+            if not tasks_jsonl.is_file():
+                continue
+            raw[sub.name] = _read_tasks(tasks_jsonl)
 
     # Build short-name map, deduplicating by task **string** so identical
     # prompts across datasets land under one key. Process single-task

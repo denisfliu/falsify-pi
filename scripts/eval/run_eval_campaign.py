@@ -262,6 +262,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "querying the VLA once per chunk instead of once "
                          "per step. NOT byte-identical to a checkpoint "
                          "deployed under sample_actions_fixed_noise.")
+    ap.add_argument("--no-gripper-overlay", action="store_true",
+                    help="Strip the wrist-cam gripper overlay from every "
+                         "trial in this campaign, regardless of what the "
+                         "policy YAML declares. Ablation knob; resize + BGR "
+                         "swap still happen.")
     ap.add_argument("--execute-chunk-size", type=int, default=None,
                     help="Override the policy YAML's execute_chunk_size. "
                          "Set to 1 for MPC-style receding-horizon: query the "
@@ -443,6 +448,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 use_rtc_override=(False if args.no_rtc else None),
                 record_dir=record_dir,
             )
+            if args.no_gripper_overlay:
+                pgcfg.gripper_overlay_paths = {}
             effective_hz = pgcfg.hz
             effective_chunk = 1 if pgcfg.use_rtc else pgcfg.execute_chunk_size
 
@@ -617,6 +624,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             summary = {
                 "scenario": scenario_name,
                 "scene": str(scene_yaml),
+                "safety_yaml": str(card.safety_yaml),
                 "scene_key": scene_key,
                 "trial_index": card.trial_index,
                 "prompt": card.prompt,
@@ -667,6 +675,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 expected_dy_sign = -1
             elif card.scene_key.endswith("_from_right"):
                 expected_dy_sign = +1
+            # True gate-aperture corners (gate surface) for the directional
+            # transit check — the gate-region AABB's mid-plane sits a few cm
+            # off the real gate and silently breaks the crossing count.
+            from falsify.safety.posthoc import apertures_from_safety_cfg
+            _apertures = apertures_from_safety_cfg(safety_cfg)
+            aperture_corners = _apertures[0] if _apertures else None
             posthoc = classify_trajectory_posthoc(
                 positions_mocap=positions_mocap,
                 scene_cfg=scene_cfg,
@@ -678,6 +692,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 n_states=len(episode.trace.states),
                 gate_deltas_mocap=(episode.metadata or {}).get("gate_deltas"),
                 expected_dy_sign=expected_dy_sign,
+                aperture_corners=aperture_corners,
             )
             summary["posthoc_outcome"]    = posthoc["outcome"]
             summary["transited"]          = posthoc["transited"]

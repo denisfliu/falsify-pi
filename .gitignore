@@ -24,3 +24,6 @@ runs/
 # committed YAMLs take over. Always env-var indirection for `api_key`,
 # never literal — but gitignore as belt-and-suspenders.
 /configs/policies/pi_gateway/live_*.yaml
+
+# gate-drone-pi0 HF bucket download (~18 GB, hf sync; see tools/gate_pi0/README.md)
+/local/

@@ -250,6 +250,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--horizon-s", type=float, default=30.0)
     parser.add_argument("--image-size", type=int, default=256,
                         help="Side length of the square image sent to the VLA.")
+    parser.add_argument("--action-space", choices=["delta", "absolute"],
+                        default="delta",
+                        help="How to interpret the server's action columns: "
+                             "'delta' (per-step MOCAP deltas, integrated; "
+                             "SousVide-era OpenPI) or 'absolute' (absolute "
+                             "MOCAP position/yaw targets; pi0 delta-action "
+                             "finetunes like gate-drone). Openpi backend only.")
     parser.add_argument("--flythrough-every", type=int, default=1,
                         help="Render every Nth state for the flythrough mp4.")
     parser.add_argument("--flythrough-fps", type=int, default=10)
@@ -262,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
                              "(e.g. `pi_gateway`) instead of constructing a "
                              "`VLAPolicy` from --host/--port/--image-size. Ignores "
                              "those flags. Skips the openpi smoke handshake.")
+    parser.add_argument("--no-gripper-overlay", action="store_true",
+                        help="Strip the wrist-cam gripper overlay from this "
+                             "run regardless of what the policy/embodiment "
+                             "YAMLs declare. The renders the policy sees are "
+                             "still resized + BGR-swapped per the embodiment; "
+                             "only the alpha-composite step is skipped. "
+                             "Useful for diagnosing whether a policy is "
+                             "sensitive to the overlay presence.")
     parser.add_argument("--safety", type=Path, default=None,
                         help="Optional safety YAML (same shape as the `safety:` "
                              "block in configs/falsification/smoke_collision.yaml). "
@@ -349,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
             prompt_override=args.prompt or None,
             record_dir=record_dir,
         )
+        if args.no_gripper_overlay:
+            pgcfg.gripper_overlay_paths = {}
+            print("[policy] --no-gripper-overlay set: stripping wrist overlay")
 
         def policy_factory(goal_ned, _policy_cfg):
             fg2 = build_frame_graph(scene_cfg, base_path=scene_dir)
@@ -363,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
                 image_size=args.image_size,
                 forward_camera="forward", downward_camera="downward",
                 server_frame="mocap",
+                action_space=args.action_space,
                 record_dir=record_dir,
             )
             # The orchestrator constructs the FrameGraph; we re-build it here

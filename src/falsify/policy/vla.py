@@ -118,6 +118,15 @@ class VLAPolicyConfig:
     # this frame into NED on the way out.
     server_frame: str = "mocap"
 
+    # How to interpret the server's action columns (position + yaw):
+    #   "delta"    — per-step MOCAP position/yaw deltas, integrated cumulatively
+    #                from the current pose (SousVide-era OpenPI checkpoints).
+    #   "absolute" — absolute MOCAP position/yaw waypoints, used directly
+    #                (pi0 delta-action checkpoints already add the current
+    #                state back server-side, so the returned actions are
+    #                absolute targets — e.g. the gate-drone pi0 finetunes).
+    action_space: str = "delta"
+
     # Optional static third-person image. None → zero-filled 3pov channel.
     third_person_image_path: Optional[str] = None
 
@@ -270,25 +279,54 @@ class VLAPolicy(Policy):
                 f"VLA server returned actions shape {actions.shape}; expected (N, ≥3)"
             )
 
-        # 4. Integrate position + yaw deltas in MOCAP.
+        # 4. Turn the action columns into MOCAP position + NED yaw waypoints.
+        #    Either integrate per-step deltas, or take absolute targets
+        #    directly (see `action_space`). Both prepend the current pose so
+        #    the chunk starts exactly where the drone is.
         n = min(actions.shape[0], self.cfg.actions_per_chunk)
-        deltas = actions[:n, :3]
-        positions_mocap = np.cumsum(deltas, axis=0) + pos_mocap[None, :]
-        positions_mocap = np.concatenate(
-            [pos_mocap[None, :], positions_mocap], axis=0,
-        )  # length n+1, starts at current pose
-
-        # Yaw integration: deltas in MOCAP-yaw add to the current MOCAP-yaw.
-        # We carry NED yaw through (sign flip at the boundary), so subtract
-        # the MOCAP delta from NED yaw (mirror of the state-vec sign flip).
         yaws_ned = np.zeros(n + 1)
         yaws_ned[0] = yaw_ned
-        if actions.shape[1] >= 4:
-            yaw_deltas_mocap = actions[:n, 3]
-            for i, dy in enumerate(yaw_deltas_mocap):
-                yaws_ned[i + 1] = yaws_ned[i] - float(dy)
+        has_yaw = actions.shape[1] >= 4
+        if self.cfg.action_space == "absolute":
+            # Absolute MOCAP targets, re-anchored so the chunk's first target is
+            # the drone's current pose. The v0 replay integrator teleports the
+            # drone exactly onto each waypoint, so a raw absolute chunk whose
+            # first target lags the just-reached pose makes the drone hitch
+            # backward at every re-query seam. Re-anchoring keeps the model's
+            # relative motion *shape* while starting it where the drone actually
+            # is — no seam discontinuity, and well-defined without dynamics.
+            abs_pos = actions[:n, :3]
+            anchored = abs_pos + (pos_mocap[None, :] - abs_pos[0][None, :])
+            positions_mocap = np.concatenate(
+                [pos_mocap[None, :], anchored], axis=0,
+            )
+            # Absolute MOCAP yaw → NED yaw is a sign flip (mirror of the
+            # state-vec `yaw_to_vla = -yaw_ned`), re-anchored the same way.
+            if has_yaw:
+                abs_yaw_ned = -actions[:n, 3]
+                yaws_ned[1:] = abs_yaw_ned + (yaw_ned - abs_yaw_ned[0])
+            else:
+                yaws_ned[:] = yaw_ned
+        elif self.cfg.action_space == "delta":
+            deltas = actions[:n, :3]
+            positions_mocap = np.cumsum(deltas, axis=0) + pos_mocap[None, :]
+            positions_mocap = np.concatenate(
+                [pos_mocap[None, :], positions_mocap], axis=0,
+            )  # length n+1, starts at current pose
+
+            # Yaw integration: deltas in MOCAP-yaw add to the current MOCAP-yaw.
+            # We carry NED yaw through (sign flip at the boundary), so subtract
+            # the MOCAP delta from NED yaw (mirror of the state-vec sign flip).
+            if has_yaw:
+                for i, dy in enumerate(actions[:n, 3]):
+                    yaws_ned[i + 1] = yaws_ned[i] - float(dy)
+            else:
+                yaws_ned[:] = yaw_ned
         else:
-            yaws_ned[:] = yaw_ned
+            raise ValueError(
+                f"Unknown action_space {self.cfg.action_space!r}; "
+                "expected 'delta' or 'absolute'."
+            )
         quats_xyzw = np.stack([_yaw_to_quat_xyzw(y) for y in yaws_ned], axis=0)
 
         times = np.arange(positions_mocap.shape[0]) / self.cfg.hz + obs.state.t

@@ -347,6 +347,21 @@ class PiGatewayPolicy(Policy):
     def reset(self) -> None:
         self._query_count = 0
         self._step_count = 0
+        # Clear server-side state at the episode boundary. The bridge only
+        # resets a history checkpoint's frame buffer (`policy._history`) on a
+        # wire `reset` message or a fresh WS connection — never on its own. So
+        # when a single PiGatewayPolicy/connection is reused across episodes,
+        # the previous episode's tail frames would otherwise bleed into the
+        # next episode's history window. No-op until the lazy connection is
+        # established (a fresh connection resets history bridge-side anyway).
+        if not self._connected:
+            return
+        if self._rtc_runner is not None:
+            # Also clears the RTC denoising-prefix accumulation locally, then
+            # forwards the wire reset to the bridge (reset_server=True default).
+            self._rtc_runner.reset()
+        elif self._client is not None:
+            self._client.reset()
 
     # ---- handshake ----------------------------------------------------
 

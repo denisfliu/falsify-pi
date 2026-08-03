@@ -75,7 +75,7 @@ skill.
 
 | Script | Purpose |
 |---|---|
-| `collect_recovery_trajectories.py` | The driver. Loops until N recovery NPZs are saved or `--max-trials` is exhausted. Writes `runs/recovery_collection/<policy_id>/<scene_key>/run-NNN-<ts>/`. |
+| `collect_recovery_trajectories.py` | The driver. Loops until N recovery NPZs are saved or `--max-trials` is exhausted. Writes `runs/recovery_collection/<policy_id>/<scene_key>/run-NNN-<ts>/`. Every harvested trajectory is validated (bounds/tilt + drone-OBB collision against the trial's perturbation-shifted clouds) via `falsify.planning.validate_trajectory` — violators are rejected with a `recovery_rejected.json` breadcrumb instead of saved. |
 | `render_recoveries_to_dataset.py` | Render a recovery-collection run into per-episode parquets, re-applying each trial's `GateRigidPerturbation` before render. Required — naive `export_training_data --trajectories-dir` would render against the nominal gate and silently mislabel frames. |
 | `live_recovery_dashboard.py` | Self-refreshing HTML dashboard (3-D rollouts + progress counters) for in-flight collection runs. Polls the newest `run-*` under each watched `(policy, scene)` pair. |
 | `viewer_with_recoveries.py` | Launch nerfstudio's ns-viewer with rollout + recovery polylines overlaid as viser scene primitives — useful for finding a camera angle for a screenshot. |
@@ -123,7 +123,9 @@ a working `tools/env.sh` for photorealistic backdrops.
 
 | Script | Purpose |
 |---|---|
-| `build_prompt_registry.py` | Walk every `data/atomic_datasets/<name>/meta/tasks.jsonl`, dedupe identical task strings across datasets, emit `configs/prompts/atomic_dataset_prompts.yaml`. `run_vla_episode` and other CLIs reject prompts not in this registry, so refresh after adding a dataset. |
+| `build_prompt_registry.py` | Walk `data/atomic_datasets/<name>/meta/tasks.jsonl` (repeatable `--datasets-dir`; pass `data/atomic_datasets_archive` too while legacy prompts are still needed), dedupe identical task strings across datasets, emit `configs/prompts/atomic_dataset_prompts.yaml`. `run_vla_episode` and other CLIs reject prompts not in this registry, so refresh after adding a dataset. |
+| `undistort_fisheye_dataset.py` | Rectify a real dataset's fisheye image columns to the calibrated pinhole K (KB4 calibration read from the drone-frame YAML's `cameras.<name>.real_distortion`). With `--to-rgb` also swaps BGR→RGB — the canonical converter into the RGB+pinhole convention (writes `<name>_rgb`; without the flag, `<name>_undistorted`). `meta/` copied verbatim. P=K, so no invalid corners. |
+| `build_wrist_overlay.py` | Derive the wrist gripper-occlusion RGBA overlay from a real dataset (per-pixel median → luminance mask → soft alpha; recipe from `configs/embodiments/assets/README.md`). Run against an `_rgb` dataset to produce the canonical RGB/pinhole overlay. |
 | `convert_no_3pov_to_v3.py` | Schema migration — convert a LeRobot v2.1 dataset to the v3.0 layout SousVide's `build_recovery_dataset.py` consumes (column renames, type widens, meta restructure). |
 | `strip_3pov.py` | Drop the `3pov_1` column from a v2.1 dataset (and its `info.json` / `episodes_stats.jsonl` references). Composes with `convert_no_3pov_to_v3.py`. |
 | `synth_episode_to_npz_and_viz.py` | Pick a random episode from a synth atomic dataset, emit a **MOCAP-frame** NPZ + plotly viz overlaid on the scene's point cloud. The NPZ is intentionally `positions_mocap` / `yaws_mocap` so it cannot be silently fed to `falsify-export-parquet` (which is NED-only by contract). |
@@ -149,6 +151,7 @@ infer per frame).
 |---|---|
 | `debug_render_at_pose.py` | Render the forward camera at the drone's initial pose, dump `Tw2g`, the NED → NS pose chain, and the NS-frame gate AABB so you can tell whether a gray render is a pose-chain bug or a model bug. Wrapped by `falsify-debug-render`. |
 | `replay_renders.py` | Re-render a previous run's flown trajectory (forward + downward cameras) into PNGs + flythrough MP4s. Mirrors the simulator's chunked-rollout indexing so the viewpoints match what the rollout actually visited. |
+| `compare_real_undistorted_vs_render.py` | Grid of `REAL raw \| REAL undistorted \| RENDER pinhole @ calibrated K` per camera along one real episode's poses — validates the undistort-then-render-pinhole parity strategy. |
 
 ---
 

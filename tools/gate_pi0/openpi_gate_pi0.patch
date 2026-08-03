@@ -1,0 +1,91 @@
+diff --git a/src/openpi/models/pi0.py b/src/openpi/models/pi0.py
+index 1531108..0a92e74 100644
+--- a/src/openpi/models/pi0.py
++++ b/src/openpi/models/pi0.py
+@@ -272,13 +272,17 @@ class Pi0(_model.BaseModel):
+         observation: _model.Observation,
+         *,
+         num_steps: int | at.Int[at.Array, ""] = 10,
++        noise: at.Array | None = None,
+     ) -> _model.Actions:
+         observation = _model.preprocess_observation(None, observation, train=False)
+         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
+         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+         dt = -1.0 / num_steps
+         batch_size = observation.state.shape[0]
+-        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
++        # `noise` is the flow's initial x_1 (t=1). When provided (source-noise / "pin"
++        # injection), use it verbatim instead of sampling; else draw standard normal.
++        if noise is None:
++            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+ 
+         # first fill KV cache with a forward pass of the prefix
+         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+diff --git a/src/openpi/policies/policy.py b/src/openpi/policies/policy.py
+index ff1635a..ff60b55 100644
+--- a/src/openpi/policies/policy.py
++++ b/src/openpi/policies/policy.py
+@@ -38,17 +38,25 @@ class Policy(BasePolicy):
+         self._metadata = metadata or {}
+ 
+     @override
+-    def infer(self, obs: dict) -> dict:  # type: ignore[misc]
++    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+         # Make a copy since transformations may modify the inputs in place.
+         inputs = jax.tree.map(lambda x: x, obs)
+         inputs = self._input_transform(inputs)
+         # Make a batch and convert to jax.Array.
+         inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+ 
++        # Optional source-noise ("pin") injection: an unbatched
++        # (action_horizon, action_dim) array we batch to match `inputs`.
++        # None → the model samples its own noise.
++        sample_noise = None if noise is None else jnp.asarray(noise)[np.newaxis, ...]
++
+         self._rng, sample_rng = jax.random.split(self._rng)
+         outputs = {
+             "state": inputs["state"],
+-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
++            "actions": self._sample_actions(
++                sample_rng, _model.Observation.from_dict(inputs),
++                noise=sample_noise, **self._sample_kwargs,
++            ),
+         }
+ 
+         # Unbatch and convert to np.ndarray.
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 164d59b..7ae5c13 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -656,6 +656,31 @@ if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
+     raise ValueError("Config names must be unique.")
+ _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
+ 
++# --- gate-drone patch ---------------------------------------------------------
++# Reconstruction of source-noise-mvp/experiments/rung3/patch_gate_config.py, which
++# appended `pi0_gate` to _CONFIGS_DICT (derived from the custom `pi0_libero_shared`).
++# `pi0_libero_shared`'s delta over base `pi0_libero` is training-only (norm-stats
++# sharing / local dataset), so for inference we re-derive from `pi0_libero`:
++# the LiberoInputs/Outputs transforms already match gate_inference.py's fed keys
++# (observation/image, observation/wrist_image, observation/state, prompt), the
++# checkpoint is standard PaliGemma pi0, and norm_stats are passed explicitly at
++# serve time. Only the dataset id changes (+ local-only to avoid a hub lookup).
++_gate_base = _CONFIGS_DICT["pi0_libero"]
++_CONFIGS_DICT["pi0_gate"] = dataclasses.replace(
++    _gate_base,
++    name="pi0_gate",
++    data=dataclasses.replace(
++        _gate_base.data,
++        repo_id="local/gate_nav",
++        base_config=dataclasses.replace(
++            _gate_base.data.base_config,
++            local_files_only=True,
++            prompt_from_task=True,
++        ),
++    ),
++)
++# ------------------------------------------------------------------------------
++
+ 
+ def cli() -> TrainConfig:
+     return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})

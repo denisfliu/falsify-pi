@@ -50,7 +50,10 @@ The OpenPI VLA on moraband was trained in MOCAP-Z-up with SousVide perm5
    - `observation/state`         — float32 shape **(7,)** = `[px, py, pz, -yaw, 0, 0, 0]`
    - `prompt`                    — str
    The `front_1`/`down_1` keys that exist in some SousVide payloads are fake duplicates and intentionally skipped.
-5. Receives `actions` (N×≥3 MOCAP-frame position deltas; optional yaw delta at column 3). Integrates cumulatively, prepends the current pose so the chunk starts where the drone is, builds a yaw-only quaternion per waypoint (NED yaw, sign-flipped each step relative to the MOCAP yaw delta).
+5. Receives `actions` (N×≥3 MOCAP position/yaw columns) and turns them into waypoints per `action_space`:
+   - `"delta"` (default, SousVide-era): per-step MOCAP position/yaw **deltas**, integrated cumulatively from the current pose.
+   - `"absolute"` (pi0 delta-action checkpoints — the gate-drone finetunes): the returned actions are **absolute** MOCAP targets (the model adds the current state back server-side). We **re-anchor** each chunk to the current pose (`anchored = actions + (pos_mocap − actions[0])`, same for yaw) — keeps the model's relative motion shape while starting exactly where the drone is. Without this, the v0 teleport-replay integrator hitches ~2-3 cm backward at every re-query seam (raw absolute targets sit slightly behind the just-reached pose).
+   Both prepend the current pose so the chunk starts where the drone is, and build a yaw-only quaternion per waypoint (NED yaw, sign-flipped relative to the MOCAP yaw).
 6. Converts the whole `Trajectory` back to NED and returns it.
 
 `openpi_client` is imported lazily; for testing inject a `pol._client`
@@ -106,7 +109,7 @@ pipeline — `falsify.policy.camera_postprocess.CameraPostprocess` — that
 runs three transforms in order:
 
 1. PIL bilinear resize to `image_size`².
-2. Channel swap RGB → BGR (when `channel_order: "BGR"`).
+2. Channel swap (only when `channel_order: "BGR"` — legacy era, see below).
 3. Optional RGBA overlay composite (e.g. the wrist gripper).
 
 Parity is therefore a property of the code — both consumers call the
@@ -118,7 +121,16 @@ same `.apply(rgb_native)` method. The YAML knobs that drive it:
 | `channel_order`           | `"RGB"` (default) / `"BGR"` | Whether to flip channels. |
 | `gripper_overlay_paths`   | `{cam_name: path}`, default `{}` | Per-camera RGBA overlay PNG composited last. |
 
-**The v7/v9 gate-scenes finetunes require:**
+**Two convention eras** (root `CLAUDE.md` § Image convention):
+
+- *Current (2026-06-12 →)*: true RGB + pinhole. New policy YAMLs set
+  `channel_order: "RGB"` and the overlay
+  `configs/embodiments/assets/carl_wrist_overlay_pinhole_rgb.png`;
+  training data comes from the RGB embodiment
+  (`configs/embodiments/carl_dual_mocap.yaml`).
+- *Legacy (v7/v9 gate-scenes finetunes — the twelve shipped variants
+  under `configs/policies/pi_gateway/`)*: BGR bytes + raw-fisheye real
+  data. Their YAMLs keep:
 
 ```yaml
 image_size: 256
@@ -127,22 +139,21 @@ gripper_overlay_paths:
   downward: configs/embodiments/assets/carl_wrist_overlay.png
 ```
 
-Set in every gate-scenes YAML under `configs/policies/pi_gateway/`
-(currently twelve variants: history + nonhistory base + may19 nonhistory
-+ live center + v9 real / real-synth dagger1 + all-cohort variants).
-The embodiment YAML (`configs/embodiments/carl_dual_mocap.yaml`) sets
-the same overlay path on its `wrist_image` entry, so the exporter and
-each policy YAML produce byte-identical preprocess — verified in
-`tests/test_preprocess_parity.py` over every shipped policy YAML.
+paired with `configs/embodiments/carl_dual_mocap_legacy_bgr.yaml`.
+**Do not flip these** — they must match what those checkpoints saw at
+training time. `tests/test_preprocess_parity.py` pairs each policy YAML
+against the embodiment of its era (selected by the YAML's
+`channel_order`) and verifies byte-identical preprocess.
 
 See `src/falsify/training/CLAUDE.md § Gripper overlay` for the asset
-build recipe.
+build recipe and the `--no-gripper-overlay` runtime override.
 
 Debug bundles (PiGatewayPolicy): each `infer()` call writes to
 `record_dir/query_<NNNN>_step_<KKKKK>/` containing:
 - `rgb_<cam>.png` — the native render the renderer produced.
-- `sent_<cam>.png` — the post-preprocess image actually sent. Holds
-  BGR bytes labeled RGB to match the training PNGs exactly.
+- `sent_<cam>.png` — the post-preprocess image actually sent. Under a
+  legacy BGR policy YAML these hold BGR bytes labeled RGB, matching that
+  era's training PNGs; under the current RGB convention they are true RGB.
 - raw actions + integrated NED waypoints.
 - `data.json` — `state`, `actions_shape`, `raw_actions_shape`,
   `use_rtc`, plus the `traceability` block copied from the YAML.
@@ -204,6 +215,7 @@ there is no admin endpoint to call and the handshake is skipped.
 - `hz`, `actions_per_chunk` — chunk shape; orchestrator's `chunk_steps` should match `actions_per_chunk`.
 - `image_size`, `forward_camera`, `downward_camera` — input shape.
 - `server_frame` (default `"mocap"`).
+- `action_space` (default `"delta"`) — `"delta"` integrates per-step MOCAP deltas; `"absolute"` treats the actions as absolute MOCAP targets and re-anchors each chunk to the current pose (pi0 delta-action checkpoints — the gate-drone finetunes; see `tools/gate_pi0/`). CLI: `--action-space`.
 - `third_person_image_path` — optional static 3pov channel (defaults to zeros).
 - `record_dir` — when set, each query saves a debug bundle under
   `record_dir/query_<NNNN>_step_<KKKKK>/`: native + post-resize renders for

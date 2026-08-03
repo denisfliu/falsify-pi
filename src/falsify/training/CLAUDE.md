@@ -33,8 +33,9 @@ Each layer is swappable independently:
 3. **Embodiment** (what training-data shape to emit). `embodiment.py` +
    `configs/embodiments/*.yaml`. Decides:
    - which scene cameras feed which parquet image column
-   - channel order written to PNG bytes (BGR for cv2-collected training
-     data, RGB for PIL)
+   - channel order written to PNG bytes — **RGB since the 2026-06-12
+     convention change** (root `CLAUDE.md` § Image convention); the BGR
+     era is frozen in `carl_dual_mocap_legacy_bgr.yaml`
    - state and action vector layouts (yaw convention, gripper, padding)
    - yaw wrapping behavior and first-action convention
 
@@ -129,8 +130,9 @@ Every consumer of a rendered camera image — the exporter here, plus
 raw render before handing it downstream:
 
 1. PIL bilinear resize to `image_size`²
-2. Channel swap RGB → BGR (when the embodiment / policy declares
-   `channel_order: "BGR"`)
+2. Channel swap (only when the embodiment / policy declares
+   `channel_order: "BGR"` — legacy era; the current convention is RGB,
+   where this step is a no-op)
 3. Composite an optional RGBA gripper overlay (see next section)
 
 These live in `src/falsify/policy/camera_postprocess.py` (`CameraPostprocess`
@@ -147,10 +149,13 @@ such occlusion. To close the distribution gap, the exporter and policy
 both composite an RGBA PNG onto the final post-resize / post-channel-
 swap downward image.
 
-- Canonical asset: `configs/embodiments/assets/carl_wrist_overlay.png`
-  (256×256 RGBA, soft-edge alpha; see the README in that directory for
-  the build recipe — median + luminance threshold over
-  `data/atomic_datasets/gate_scenes_real_combined`).
+- Canonical asset:
+  `configs/embodiments/assets/carl_wrist_overlay_pinhole_rgb.png`
+  (256×256 RGBA, soft-edge alpha; authored in RGB against the
+  KB4-undistorted `gate_scenes_real_combined_rgb` dataset via
+  `scripts/dataset/build_wrist_overlay.py` — recipe in the assets
+  README). The legacy BGR/fisheye asset `carl_wrist_overlay.png` stays
+  for the twelve shipped v7/v9 policy YAMLs.
 - Embodiment YAML knob: `cameras[*].gripper_overlay_path` (string,
   optional). Only set on the `wrist_image` entry today.
 - Policy YAML knob (PiGateway + VLA): `gripper_overlay_paths:` is a
@@ -162,10 +167,27 @@ swap downward image.
   channel_order, overlay_path)` loads the PNG once at consumer init;
   `apply()` does straight-alpha compositing on the final image. The
   overlay must already be in the channel order it'll be composited
-  against (typically `BGR`, matching the dataset it was derived from).
+  against (RGB for the current convention; the legacy asset is BGR,
+  matching the dataset each was derived from).
 
 If the airframe / camera mount changes, re-derive the overlay against a
-fresh real-data dataset and overwrite the PNG — no code changes needed.
+fresh (undistorted, RGB) real-data dataset via
+`scripts/dataset/build_wrist_overlay.py` — no code changes needed.
+
+### Disabling the overlay at runtime
+
+Every production CLI that drives the pipeline accepts `--no-gripper-overlay`:
+
+| CLI | Effect |
+|---|---|
+| `falsify.cli.export_training_data` | The embodiment is cloned with `gripper_overlay_path=None` on every camera before exporter init — output parquets have **no overlay** on `wrist_image` while keeping all other preprocess identical (resize + BGR swap). Use to build ablation datasets. |
+| `falsify.cli.run_vla_episode` (pi_gateway path) | `PiGatewayConfig.gripper_overlay_paths` is reset to `{}` after YAML load. |
+| `scripts/eval/run_eval_campaign.py` | Same override applied to every trial in the campaign. |
+| `scripts/recovery/collect_recovery_trajectories.py` | Same override applied for every recovery trial. |
+
+The flag is a *runtime* override — the YAMLs still declare the production
+overlay path, so re-running without the flag picks the overlay back up.
+For permanent removal, edit the YAML.
 
 ## Adding a new trajectory producer
 

@@ -10,14 +10,28 @@ motor_thrust_coeff: 6.90
 motor_torque_coeff: 0.69
 number_of_rotors: 4
 
+# Intrinsics from OpenCV *fisheye* (KB4) calibration of the real drone
+# cameras (2026-06-12, 1024x768 images). The gsplat renderer is a
+# distortion-free pinhole, so only `intrinsics` is consumed by sensors.
+# `real_distortion` describes the physical lens; it is NOT applied at render
+# time — real footage is rectified to this pinhole K instead (see
+# scripts/dataset/undistort_fisheye_dataset.py), so renders and rectified
+# real images share the same projection model.
 cameras:
   forward:
     frame: cam_forward          # must be declared in the scene YAML's frames list
     model: pinhole
-    intrinsics: { width: 640, height: 360, fx: 462.956, fy: 463.002, cx: 323.076, cy: 181.184 }
+    intrinsics: { width: 1024, height: 768, fx: 502.2632, fy: 500.6736, cx: 506.3971, cy: 385.4100 }
+    # calib 2026-06-12 22:09, RMS reproj err 0.419 px
+    real_distortion:
+      model: opencv_fisheye     # KB4: [k1, k2, k3, k4]
+      coeffs: [-0.012191737, -0.010285329, 0.015946859, -0.011163736]
 
   downward:
     frame: cam_downward
     model: pinhole
-    # PLACEHOLDER intrinsics — replace with real calibration when available.
-    intrinsics: { width: 320, height: 320, fx: 200.0, fy: 200.0, cx: 160.0, cy: 160.0 }
+    intrinsics: { width: 1024, height: 768, fx: 478.2450, fy: 476.7944, cx: 511.9041, cy: 383.5003 }
+    # calib 2026-06-12 22:14, RMS reproj err 0.320 px
+    real_distortion:
+      model: opencv_fisheye
+      coeffs: [0.027820801, -0.028847522, 0.031002727, -0.016655337]

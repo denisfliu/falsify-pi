@@ -147,7 +147,35 @@ When directional enforcement triggers a demotion (wrong-direction or
 no correct crossing), the trial is classified ``MISS_GATE``. See
 ``src/falsify/safety/posthoc.py``.
 
-### v7 finetune policy preprocess
+## Image convention — RGB + pinhole (since 2026-06-12)
+
+All datasets and policies from 2026-06-12 onward use **true RGB bytes and
+pinhole projection**:
+
+- Sim renders are distortion-free pinhole at the calibrated K in
+  ``configs/frames/carl_dual.yaml`` (KB4 fisheye calibration of the real
+  cameras, 2026-06-12, recorded there as ``real_distortion`` — never
+  applied at render time).
+- Real footage must be KB4-rectified to that same K **and** channel-swapped
+  before entering a dataset:
+  ``scripts/dataset/undistort_fisheye_dataset.py --to-rgb`` (output suffix
+  ``_rgb``). Live deployment of new-convention checkpoints must equally
+  undistort on-drone frames before inference.
+- The canonical embodiment ``configs/embodiments/carl_dual_mocap.yaml`` is
+  RGB-era; the wrist gripper overlay is
+  ``configs/embodiments/assets/carl_wrist_overlay_pinhole_rgb.png``
+  (rebuilt from the rectified dataset via
+  ``scripts/dataset/build_wrist_overlay.py``).
+
+**Legacy era (BGR bytes labeled RGB + raw fisheye)** survives in exactly
+three places and nowhere else: ``carl_dual_mocap_legacy_bgr.yaml`` (frozen
+embodiment), the twelve shipped v7/v9 policy YAMLs (must keep
+``channel_order: "BGR"`` + the old overlay for checkpoint parity), and
+``data/atomic_datasets_archive/`` (old datasets, prepared for deletion —
+see its README manifest). ``tests/test_preprocess_parity.py`` pairs each
+policy YAML with the embodiment of its era automatically.
+
+### v7 finetune policy preprocess (legacy era)
 
 Every ``configs/policies/pi_gateway/*.yaml`` for the v7/v9 gate-scenes
 finetunes (the twelve variants currently shipped under
@@ -156,11 +184,17 @@ finetunes (the twelve variants currently shipped under
 
 ```yaml
 image_size: 256        # resize each cam to 256x256 before sending
-channel_order: "BGR"   # flip RGB → BGR before sending
+channel_order: "BGR"   # legacy: flip RGB → BGR before sending
 gripper_overlay_paths:
   downward: configs/embodiments/assets/carl_wrist_overlay.png
 embodiment_path: configs/embodiments/carl_dual_mocap.yaml
 ```
+
+(``embodiment_path`` only feeds the **state-vector schema**, which is
+identical across both embodiment eras — image preprocess comes entirely
+from the policy YAML's own three knobs, so these legacy YAMLs are
+unaffected by the canonical embodiment's flip to RGB. New-convention
+policy YAMLs use ``channel_order: "RGB"`` + the ``_pinhole_rgb`` overlay.)
 
 All four knobs drive the shared
 ``falsify.policy.camera_postprocess.CameraPostprocess`` (resize →
@@ -203,8 +237,13 @@ the contracts of each module.
 Falsify has **two** policy adapters that talk to a VLA over WebSocket:
 
 - `VLAPolicy` — the legacy path, speaks `openpi_client`'s protocol against
-  the OpenPI server moraband already runs. Used for SousVide-era
-  checkpoints.
+  an OpenPI websocket server (moraband's, or a self-hosted one). Used for
+  SousVide-era checkpoints **and** the gate-drone pi0 finetunes (below).
+  Its `action_space` config selects `delta` (SousVide-era per-step MOCAP
+  deltas, integrated cumulatively) or `absolute` (absolute MOCAP
+  position/yaw targets, re-anchored to the current pose — for pi0
+  delta-action checkpoints whose returned actions are already absolute).
+  CLI flag: `--action-space`.
 - `PiGatewayPolicy` — speaks `pi_inference_client`'s commercial-gateway
   wire protocol (`load` / `infer` / `reset` / `telemetry` over WSS with
   an `Authorization: Api-Key` header). Used for the dronevla v7
@@ -226,6 +265,21 @@ Switching topologies is a YAML edit; no falsify-side code changes.
 Variant YAMLs live in `configs/policies/pi_gateway/`, one per deployed
 checkpoint; each carries a `traceability:` block (W&B run, step, GCS
 checkpoint URI, processor name) so we can reproduce later.
+
+### Gate-drone pi0 checkpoints (openpi, not Pi-gateway)
+
+The `gate-drone-pi0-bucket` (HF `hf://buckets/denis-liu-tri/gate-drone-pi0-bucket`)
+holds **stock openpi pi0** checkpoints (`gate_both_scratch` baseline,
+`gate_both_pin` source-noise/"pin" variant, `gate_synth_scratch`) — *not*
+Pi-gateway checkpoints, so `pi_local_bridge`/`PiGatewayPolicy` can't serve
+them. They're served over openpi's own websocket protocol (which `VLAPolicy`
+speaks) via `tools/gate_pi0/serve_gate.py` / `serve_gate_pin.py` running in a
+separate `~/code/openpi` JAX venv. Requires an openpi patch (`pi0_gate`
+config + source-noise `noise=` threading) and 7→32 norm-stats padding; the
+pin variant injects `noise = g − (g·U)Uᵀ + (c·Uᵀ)` from an instruction-prior
+MLP. Client side: `run_vla_episode … --action-space absolute
+--actions-per-chunk 8`. **Full recipe, download links, the openpi patch, and
+findings: `tools/gate_pi0/README.md`.**
 
 ### Multi-policy bridge
 

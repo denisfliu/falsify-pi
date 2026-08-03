@@ -1,8 +1,10 @@
-# Carl drone, dual-camera, MOCAP-frame state — matches the LeRobot dataset
-# DroneVLA2.0 collects from real flights. See
-# ~/Downloads/episode_000008.parquet for the exact target schema; this
-# embodiment emits an identical column set so falsify-generated parquets
-# slot straight into the existing training pipeline.
+# Carl drone, dual-camera, MOCAP-frame state. Canonical embodiment under the
+# repo-wide image convention (2026-06-12): images are true RGB and pinhole —
+# sim renders are distortion-free pinhole at the calibrated K
+# (configs/frames/carl_dual.yaml), and real footage is KB4-rectified to the
+# same K (scripts/dataset/undistort_fisheye_dataset.py --to-rgb) before it
+# enters a dataset. The BGR + raw-fisheye era is frozen in
+# carl_dual_mocap_legacy_bgr.yaml for the shipped v7/v9 checkpoints.
 
 name: carl_dual_mocap
 fps: 10
@@ -10,29 +12,30 @@ image_size: 256
 robot_type: panda
 notes: >-
   State is MOCAP (Z-up). Yaw sign follows the VLA training convention
-  (yaw_mocap = -yaw_ned); the exporter handles that flip. Channel order
-  is BGR because the on-drone collector (data_collection_lerobot.py) used
-  cv2 which is BGR — keeping the format identical avoids surprises in the
-  trained policy's input distribution.
+  (yaw_mocap = -yaw_ned); the exporter handles that flip. Images are true
+  RGB, pinhole projection (convention change 2026-06-12; previously BGR +
+  raw fisheye — see carl_dual_mocap_legacy_bgr.yaml).
 
 cameras:
   - column: image            # forward — same key the LeRobot dataset uses
     source: render
     camera_name: forward
-    channel_order: BGR
+    channel_order: RGB
     image_size: 256
   - column: wrist_image      # downward
     source: render
     camera_name: downward
-    channel_order: BGR
+    channel_order: RGB
     image_size: 256
     # RGBA overlay baking the drone's own struts / gripper into the sim
     # render so it matches the static occlusion the real wrist-cam
-    # always sees. Composited last in `CameraPostprocess.apply`.
-    gripper_overlay_path: configs/embodiments/assets/carl_wrist_overlay.png
+    # always sees. Composited last in `CameraPostprocess.apply`. Authored
+    # in RGB against the undistorted gate_scenes_real_combined_rgb dataset
+    # (scripts/dataset/build_wrist_overlay.py).
+    gripper_overlay_path: configs/embodiments/assets/carl_wrist_overlay_pinhole_rgb.png
   - column: "3pov_1"         # third person — falsify has no synthetic 3pov
     source: zeros
-    channel_order: BGR
+    channel_order: RGB
     image_size: 256
 
 state:

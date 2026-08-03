@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import time
 import uuid
@@ -62,7 +63,8 @@ class JobManager:
 
     # ------------------------------------------------------------- launch
     def launch(self, type_name: str, form_args: dict, override: bool = False,
-               queue: bool = False, chain: list | None = None) -> Job:
+               queue: bool = False, chain: list | None = None,
+               group_id: str | None = None, group_label: str = "") -> Job:
         """Start a job now, or — for GPU jobs while another GPU job is
         running/queued — either 409 (default) or enqueue (queue=True).
         `chain` entries launch on success with "$out_dir" substituted."""
@@ -87,7 +89,7 @@ class JobManager:
             created_at=time.time(), ended_at=None, exit_code=None,
             log_path=str(JOBS_DIR / job_id / "job.log"),
             out_dir=built.out_dir, url=built.url, label=built.label,
-            chain=chain or [],
+            chain=chain or [], group_id=group_id, group_label=group_label,
         )
         self.store.insert(job)
         if not gpu_blocked:
@@ -244,21 +246,57 @@ class JobManager:
             # exit code unknown (adopted) — infer from expected outputs
             job.status = self._infer_terminal(job) or "orphaned"
         self.store.update(job)
-        if job.status == "succeeded" and job.chain:
+        if job.chain and (
+                job.status == "succeeded"
+                or (job.status == "failed" and job.chain[0].get("always"))):
+            # killed/orphaned always halts the chain — a kill is deliberate
             self._launch_chain(job)
+
+    def _subst(self, v, parent: Job):
+        if not isinstance(v, str):
+            return v
+        if "$out_dir" in v:
+            v = v.replace("$out_dir", parent.out_dir or "")
+        def _nparquets(m):
+            d = REPO_ROOT / m.group(1)
+            return str(len(list(d.rglob("*.parquet"))) if d.exists() else 0)
+        return re.sub(r"\$nparquets\(([^)]+)\)", _nparquets, v)
 
     def _launch_chain(self, parent: Job) -> None:
         entry, rest = parent.chain[0], parent.chain[1:]
-        args = {}
-        for k, v in (entry.get("args") or {}).items():
-            if isinstance(v, str) and "$out_dir" in v:
-                v = v.replace("$out_dir", parent.out_dir or "")
-            args[k] = v
+        args = {k: self._subst(v, parent)
+                for k, v in (entry.get("args") or {}).items()}
         try:
-            child = self.launch(entry["type"], args, queue=True, chain=rest)
+            child = self.launch(entry["type"], args, queue=True, chain=rest,
+                                group_id=parent.group_id,
+                                group_label=parent.group_label)
             print(f"[gui] chained {child.id} after {parent.id}")
         except Exception as e:
             print(f"[gui] chain after {parent.id} failed to launch: {e!r}")
+
+    # ---------------------------------------------------------- workflows
+    def submit_workflow(self, name: str, form_args: dict) -> dict:
+        from .workflows import WORKFLOWS
+        wf = WORKFLOWS.get(name)
+        if wf is None:
+            raise KeyError(f"unknown workflow {name!r}")
+        group_label, steps = wf.expand(form_args)
+        if not steps:
+            raise ValueError("workflow expanded to zero steps")
+        # dry-build every step now so arg errors surface at submit time,
+        # not hours into the pipeline
+        for s in steps:
+            jt = JOB_TYPES.get(s["type"])
+            if jt is None:
+                raise KeyError(f"workflow step has unknown type {s['type']!r}")
+            jt.build(s["args"])
+        group_id = f"wf-{time.strftime('%Y%m%d-%H%M%S')}-{name}-{uuid.uuid4().hex[:4]}"
+        first, rest = steps[0], steps[1:]
+        job = self.launch(first["type"], first["args"], queue=True,
+                          chain=rest, group_id=group_id,
+                          group_label=group_label)
+        return {"group_id": group_id, "group_label": group_label,
+                "n_steps": len(steps), "first_job": job}
 
     def _infer_terminal(self, job: Job) -> str | None:
         jt = JOB_TYPES.get(job.type)

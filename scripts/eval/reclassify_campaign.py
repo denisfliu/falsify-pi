@@ -107,6 +107,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         gate_deltas = (s.get("perturbations_manifest") or {}).get("gate_deltas") \
             if isinstance(s.get("perturbations_manifest"), dict) else None
 
+        # True gate-aperture corners (gate surface) for the directional
+        # transit check. Prefer the safety path the campaign recorded;
+        # fall back to the scenes↔safety naming convention
+        # (configs/scenes/<x>.yaml → configs/safety/<x>.yaml) for older
+        # summaries that predate `safety_yaml` being persisted.
+        from falsify.safety.posthoc import apertures_from_safety_cfg
+        safety_yaml = (REPO_ROOT / s["safety_yaml"]) if s.get("safety_yaml") \
+            else (REPO_ROOT / "configs" / "safety" / scene_yaml.name)
+        aperture_corners = None
+        if safety_yaml.is_file():
+            _ap = apertures_from_safety_cfg(load_yaml(safety_yaml))
+            aperture_corners = _ap[0] if _ap else None
+
         expected = _expected_dy_sign(scene_key)
         result = classify_trajectory_posthoc(
             positions_mocap=positions_mocap,
@@ -116,6 +129,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             n_states=int(s.get("n_states", positions_mocap.shape[0])),
             gate_deltas_mocap=gate_deltas,
             expected_dy_sign=expected,
+            aperture_corners=aperture_corners,
         )
 
         old_outcome = s.get("posthoc_outcome", "UNKNOWN")

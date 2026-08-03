@@ -50,6 +50,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mpc-frame", type=Path, default=None,
                    help="FiGS-schema drone frame JSON. Defaults to "
                         "configs/frames/figs/carl.json. mpc planner only.")
+    p.add_argument("--safety", type=Path, default=None,
+                   help="Safety YAML providing bounds/speed/tilt limits and "
+                        "collision geometry for plan validation. Default: "
+                        "configs/safety/<scene-stem>.yaml when it exists.")
+    p.add_argument("--no-validate", action="store_true",
+                   help="Skip plan validation entirely.")
+    p.add_argument("--allow-invalid", action="store_true",
+                   help="Write the NPZ even when validation fails "
+                        "(diagnostic escape hatch — never feed these to "
+                        "training).")
     args = p.parse_args(argv)
 
     scene_cfg = load_yaml(args.scene)
@@ -62,6 +72,29 @@ def main(argv: list[str] | None = None) -> int:
         traj = plan_mpc(course, fg, prompt=args.prompt, frame_cfg=args.mpc_frame)
     else:
         raise SystemExit(f"unsupported planner {args.planner!r}")
+
+    if not args.no_validate:
+        safety_path = args.safety
+        if safety_path is None:
+            candidate = Path("configs/safety") / f"{args.scene.stem}.yaml"
+            if candidate.is_file():
+                safety_path = candidate
+        if safety_path is None:
+            print(f"[validate] WARN: no safety YAML found for scene "
+                  f"{args.scene.stem!r} — plan NOT validated "
+                  f"(pass --safety, or --no-validate to silence)")
+        else:
+            from falsify.planning import validate_trajectory
+            result = validate_trajectory(
+                traj, fg,
+                scene_cfg=scene_cfg, scene_dir=args.scene.parent,
+                safety_cfg=load_yaml(safety_path),
+            )
+            print(f"[validate] {result.summary()}")
+            if not result.ok and not args.allow_invalid:
+                print("[validate] refusing to write the NPZ "
+                      "(--allow-invalid to override)")
+                return 2
 
     out_path = save_trajectory(args.out, traj)
     print(f"[plan] {args.planner}: {len(traj)} frames over {traj.duration_s:.2f}s")

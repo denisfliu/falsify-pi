@@ -30,7 +30,9 @@ class CameraSpec:
     source: Literal["render", "zeros", "static"]  # how to populate this image
     camera_name: Optional[str] = None  # required when source == "render"
     static_path: Optional[str] = None  # path to a static PNG, when source == "static"
-    channel_order: Literal["RGB", "BGR"] = "BGR"
+    # Convention since 2026-06-12: true RGB everywhere. "BGR" remains only
+    # for the legacy embodiment paired with the v7/v9-era checkpoints.
+    channel_order: Literal["RGB", "BGR"] = "RGB"
     image_size: int = 256             # square output edge
     # Optional RGBA PNG composited onto the final post-resize / post-channel-
     # swap image. Used to bake the drone's own struts / gripper into the
@@ -102,7 +104,7 @@ def load_embodiment(path: str | Path) -> EmbodimentSpec:
             source=c["source"],
             camera_name=c.get("camera_name"),
             static_path=c.get("static_path"),
-            channel_order=c.get("channel_order", "BGR"),
+            channel_order=c.get("channel_order", "RGB"),
             image_size=int(c.get("image_size", cfg.get("image_size", 256))),
             gripper_overlay_path=c.get("gripper_overlay_path"),
         )

@@ -37,12 +37,62 @@ def job_types() -> list[dict]:
     return [jt.schema() for jt in JOB_TYPES.values()]
 
 
+@router.get("/workflows/types")
+def workflow_types() -> list[dict]:
+    from ..jobs.workflows import WORKFLOWS
+    return [wf.schema() for wf in WORKFLOWS.values()]
+
+
+class WorkflowBody(BaseModel):
+    name: str
+    args: dict = {}
+    dry: bool = False
+
+
+@router.post("/workflows", status_code=201)
+def submit_workflow(body: WorkflowBody, request: Request) -> dict:
+    mgr = _mgr(request)
+    if body.dry:
+        from ..jobs.workflows import WORKFLOWS
+        wf = WORKFLOWS.get(body.name)
+        if wf is None:
+            raise HTTPException(422, f"unknown workflow {body.name!r}")
+        try:
+            group_label, steps = wf.expand(body.args)
+        except (KeyError, ValueError) as e:
+            raise HTTPException(422, detail=str(e))
+        return {"dry": True, "group_label": group_label, "steps": steps}
+    try:
+        res = mgr.submit_workflow(body.name, body.args)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(422, detail=str(e))
+    res["first_job"] = _job_dict(mgr, res["first_job"])
+    return res
+
+
+def _bundle_missing(scenario_path: str) -> bool:
+    from ..services import configs_enum
+    from pathlib import Path
+    name = Path(scenario_path).stem
+    b = next((x for x in configs_enum.get_bundles() if x["scenario"] == name), None)
+    return b is None or not b["exists"]
+
+
 @router.post("/jobs", status_code=201)
 def launch(body: LaunchBody, request: Request) -> dict:
     mgr = _mgr(request)
     try:
-        job = mgr.launch(body.type, body.args, override=body.override,
-                         queue=body.queue, chain=body.chain)
+        # convenience: a campaign against a missing bundle auto-prepends
+        # the (fast) bundle-generation job and chains the campaign after it
+        if (body.type == "eval_campaign" and body.args.get("scenario")
+                and _bundle_missing(body.args["scenario"])):
+            job = mgr.launch(
+                "generate_eval_bundles",
+                {"scenario": body.args["scenario"]},
+                chain=[{"type": "eval_campaign", "args": body.args}] + body.chain)
+        else:
+            job = mgr.launch(body.type, body.args, override=body.override,
+                             queue=body.queue, chain=body.chain)
     except GpuBusyError as e:
         raise HTTPException(409, detail={
             "error": "gpu job already running or queued",

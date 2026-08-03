@@ -209,19 +209,31 @@ def check_directional_transit(
     aabb_max: np.ndarray,
     *,
     expected_dy_sign: int,
+    aperture_corners: Optional[np.ndarray] = None,
 ) -> DirectionalTransitResult:
-    """Count signed crossings of the gate's mid-y plane inside the AABB.
+    """Count signed crossings of the gate plane inside the aperture.
 
-    The gate plane is at ``(aabb_min.y + aabb_max.y) / 2`` (mocap). A
-    "crossing" is a step ``i → i+1`` where the y-component changes sign
-    relative to that plane and where the linearly-interpolated (x, z) at
-    the crossing lands inside ``[aabb_min.xz, aabb_max.xz]``. The sign
-    of the crossing is ``sign(positions[i+1].y - positions[i].y)``.
+    Two geometry sources, in priority order:
 
-    ``expected_dy_sign`` must be ``+1`` or ``-1`` — the dy sign that a
-    *correct* transit produces for this prompt direction. Crossings that
-    match are counted as ``correct_crossings``; opposite-sign crossings
-    are counted as ``wrong_crossings``.
+    - **``aperture_corners`` (preferred)** — the ``(4, 3)`` MOCAP corners
+      of the *true* gate opening (from the safety YAML's
+      ``miss_gate.corners``). The plane passes through their centroid with
+      the rectangle's own normal; the aperture test is against the
+      in-plane half-widths. This is the physical gate surface and is what
+      the runtime ``MissGateCriterion`` uses.
+    - **AABB fallback** — when no corners are supplied, the plane is the
+      gate-region AABB's mid-y plane ``(aabb_min.y + aabb_max.y) / 2`` and
+      the aperture is the AABB's x/z extents. This is a *loose* box whose
+      y-centre can sit several cm off the real gate (e.g. center_gate's
+      AABB mid-y is -0.265 vs the true plane -0.327), so prefer corners.
+
+    A "crossing" is a step ``i → i+1`` whose endpoints straddle the plane
+    and whose interpolated intersection lands inside the aperture
+    rectangle. The crossing's direction is ``sign(positions[i+1].y -
+    positions[i].y)`` — i.e. the y-velocity, matching the ±y "from
+    left/right" prompt semantics. ``expected_dy_sign`` (``+1``/``-1``) is
+    the dy sign a *correct* transit produces; matching crossings count as
+    ``correct_crossings``, opposite-sign as ``wrong_crossings``.
     """
     if expected_dy_sign not in (-1, 1):
         raise ValueError(
@@ -230,6 +242,12 @@ def check_directional_transit(
     if positions_mocap.ndim != 2 or positions_mocap.shape[1] != 3:
         raise ValueError(
             f"positions_mocap must be (N, 3); got {positions_mocap.shape}"
+        )
+
+    if aperture_corners is not None:
+        return _directional_transit_plane(
+            positions_mocap, aperture_corners,
+            expected_dy_sign=expected_dy_sign,
         )
 
     y_plane = 0.5 * (float(aabb_min[1]) + float(aabb_max[1]))
@@ -281,6 +299,63 @@ def check_directional_transit(
         first_wrong_step=first_wrong,
         expected_dy_sign=int(expected_dy_sign),
         gate_plane_y_mocap=y_plane,
+    )
+
+
+def _directional_transit_plane(
+    positions_mocap: np.ndarray,
+    aperture_corners: np.ndarray,
+    *,
+    expected_dy_sign: int,
+) -> DirectionalTransitResult:
+    """Corner-based signed-crossing count — see ``check_directional_transit``.
+
+    Uses the aperture rectangle's own plane (centroid + normal) and
+    in-plane half-widths instead of the gate-region AABB. Crossing
+    detection is along the plane normal (so a tilted/yawed gate is handled
+    correctly); the *direction* label is still the y-velocity sign to
+    preserve the ±y "from left/right" semantics.
+    """
+    c, u, v, n, hu, hv = _aperture_basis(aperture_corners)
+    pos = np.asarray(positions_mocap, dtype=np.float64)
+
+    # Signed distance of each state to the gate plane (along the normal).
+    s = (pos - c) @ n
+    dy_signs = pos[1:, 1] - pos[:-1, 1]
+    crosses = (s[:-1] * s[1:]) < 0
+
+    correct = 0
+    wrong = 0
+    first_correct: Optional[int] = None
+    first_wrong: Optional[int] = None
+
+    for i in np.where(crosses)[0]:
+        sp, sn = float(s[i]), float(s[i + 1])
+        t = sp / (sp - sn)               # fraction where the plane is hit
+        cross_pt = pos[i] + t * (pos[i + 1] - pos[i])
+        rel = cross_pt - c
+        cu = float(rel @ u)
+        cv = float(rel @ v)
+        if abs(cu) > hu or abs(cv) > hv:
+            continue  # plane crossing outside the aperture rectangle
+        dy = float(dy_signs[i])
+        dy_sign = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        if dy_sign == expected_dy_sign:
+            correct += 1
+            if first_correct is None:
+                first_correct = int(i)
+        elif dy_sign == -expected_dy_sign:
+            wrong += 1
+            if first_wrong is None:
+                first_wrong = int(i)
+
+    return DirectionalTransitResult(
+        correct_crossings=correct,
+        wrong_crossings=wrong,
+        first_correct_step=first_correct,
+        first_wrong_step=first_wrong,
+        expected_dy_sign=int(expected_dy_sign),
+        gate_plane_y_mocap=float(c[1]),
     )
 
 
@@ -523,6 +598,7 @@ def classify_trajectory_posthoc(
     gate_deltas_mocap: Optional[dict] = None,
     runtime_error: bool = False,
     expected_dy_sign: Optional[int] = None,
+    aperture_corners: Optional[np.ndarray] = None,
 ) -> dict:
     """Decide the final outcome of a trial.
 
@@ -640,11 +716,20 @@ def classify_trajectory_posthoc(
     # regardless of what the runtime stopped on.
     directional_result: Optional[DirectionalTransitResult] = None
     if expected_dy_sign is not None:
+        # Prefer the true aperture corners (gate surface) over the loose
+        # gate-region AABB mid-plane. Apply any gate-perturbation Δ to the
+        # corners with the same rigid transform used for the AABB / cloud.
+        corners = aperture_corners
+        if corners is not None and gate_deltas_mocap is not None:
+            corners = apply_gate_deltas_to_cloud(
+                np.asarray(corners, dtype=np.float64), gate_deltas_mocap,
+            )
         directional_result = check_directional_transit(
             positions_mocap,
             tr.aabb_min_mocap,
             tr.aabb_max_mocap,
             expected_dy_sign=expected_dy_sign,
+            aperture_corners=corners,
         )
         base["expected_dy_sign"]  = int(expected_dy_sign)
         base["gate_plane_y_mocap"] = directional_result.gate_plane_y_mocap

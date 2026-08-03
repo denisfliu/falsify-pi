@@ -6,14 +6,22 @@ prompts:
   center_from_left:
     task: "go through the center gate from the left and hover over the stuffed animal"
     source: synth_center_from_left/meta/tasks.jsonl (task_index 0)
+    # also matched by: dagger-1_center/task_0
   center_from_right:
     task: "go through the center gate from the right and hover over the stuffed animal"
     source: synth_center_from_right/meta/tasks.jsonl (task_index 0)
+    # also matched by: dagger-1_center/task_1
+  dagger-1_center_2:
+    task: "go through the gate on the left, then through the center gate and hover over the stuffed animal"
+    source: dagger-1_center/meta/tasks.jsonl (task_index 2)
+  dagger-1_center_3:
+    task: "go through the gate on the right, then through the center gate and hover over the stuffed animal"
+    source: dagger-1_center/meta/tasks.jsonl (task_index 3)
   left_gate:
     task: "go through the gate on the left and hover over the stuffed animal"
     source: synth_left_gate/meta/tasks.jsonl (task_index 0)
-    # also matched by: dagger-1_real_synth/task_0, gate_scenes_real_combined/task_0, real_synth_dagger1/task_0
+    # also matched by: dagger-1_real_synth/task_0, gate_scenes_real_combined/task_0, gate_scenes_real_combined_rgb/task_0
   right_gate:
     task: "go through the gate on the right and hover over the stuffed animal"
     source: synth_right_gate/meta/tasks.jsonl (task_index 0)
-    # also matched by: dagger-1_real_synth/task_1, gate_scenes_real_combined/task_1, real_synth_dagger1/task_1
+    # also matched by: dagger-1_real_synth/task_1, gate_scenes_real_combined/task_1, gate_scenes_real_combined_rgb/task_1

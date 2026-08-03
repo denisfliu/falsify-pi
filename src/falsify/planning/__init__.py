@@ -27,6 +27,7 @@ from .waypoints import (
 )
 from .spline import plan_spline
 from .mpc import plan_mpc
+from .validation import ValidationResult, validate_trajectory
 from .perturbations import (
     CourseVariant,
     Direction,
@@ -45,6 +46,8 @@ __all__ = [
     "save_course",
     "plan_spline",
     "plan_mpc",
+    "ValidationResult",
+    "validate_trajectory",
     "CourseVariant",
     "Direction",
     "perturb_waypoint",

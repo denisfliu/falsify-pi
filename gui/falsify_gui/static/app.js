@@ -34,11 +34,13 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-const state = { configs: null, jobTypes: null, bundles: [], pollTimer: null, logSource: null };
+const state = { configs: null, jobTypes: null, workflows: [], bundles: [],
+  pollTimer: null, logSource: null };
 
 async function loadStatic() {
-  [state.configs, state.jobTypes, state.bundles] = await Promise.all([
-    api("/configs"), api("/jobs/types"), api("/configs/bundles"),
+  [state.configs, state.jobTypes, state.workflows, state.bundles] = await Promise.all([
+    api("/configs"), api("/jobs/types"), api("/workflows/types"),
+    api("/configs/bundles"),
   ]);
 }
 
@@ -142,21 +144,41 @@ function formValues(inputs) {
 function jobsTab(main) {
   const formFields = el("div");
   const typeDesc = el("p", { class: "muted", style: "font-size:0.82rem; line-height:1.45; margin:0.5rem 0 0" });
+  const isWf = () => typeSelect.value.startsWith("wf:");
+  const currentSchema = () => isWf()
+    ? state.workflows.find(w => "wf:" + w.name === typeSelect.value)
+    : state.jobTypes.find(t => t.name === typeSelect.value);
   const setType = () => {
-    const jt = state.jobTypes.find(t => t.name === typeSelect.value);
+    const jt = currentSchema();
     typeDesc.textContent = jt.description || "";
     currentInputs = renderForm(jt, formFields);
   };
   const typeSelect = el("select", { onchange: setType });
-  for (const jt of state.jobTypes.filter(t => t.kind === "job")) {
-    typeSelect.append(el("option", { value: jt.name }, jt.label + (jt.gpu ? "  [GPU]" : "")));
+  const wfGroup = el("optgroup", { label: "Workflows" });
+  for (const wf of state.workflows) {
+    wfGroup.append(el("option", { value: "wf:" + wf.name }, "⛓ " + wf.label));
   }
+  const jobGroup = el("optgroup", { label: "Single jobs" });
+  for (const jt of state.jobTypes.filter(t => t.kind === "job")) {
+    jobGroup.append(el("option", { value: jt.name }, jt.label + (jt.gpu ? "  [GPU]" : "")));
+  }
+  typeSelect.append(wfGroup, jobGroup);
   let currentInputs = null;
   const launchMsg = el("div", { class: "muted" });
   const launchBtn = el("button", { onclick: async () => {
     launchMsg.textContent = "";
     const type = typeSelect.value;
     const args = formValues(currentInputs);
+    if (type.startsWith("wf:")) {
+      try {
+        const res = await api("/workflows", { method: "POST",
+          body: { name: type.slice(3), args } });
+        launchMsg.textContent = `⛓ ${res.group_label}: ${res.n_steps} steps submitted`;
+        openJobDetail(res.first_job.id);
+        refreshJobs();
+      } catch (e) { launchMsg.textContent = "✗ " + e.message; }
+      return;
+    }
     try {
       const job = await api("/jobs", { method: "POST", body: { type, args } });
       openJobDetail(job.id);
@@ -174,6 +196,7 @@ function jobsTab(main) {
   }}, "Launch");
 
   const jobTable = el("tbody");
+  const wfStatus = el("div", { class: "muted", style: "margin-bottom:0.5rem" });
   const detail = el("div");
 
   main.replaceChildren(el("div", { class: "row" },
@@ -184,6 +207,7 @@ function jobsTab(main) {
       bridgePanel(),
       el("div", { class: "panel" },
         el("h2", {}, "Jobs"),
+        wfStatus,
         el("table", {},
           el("thead", {}, el("tr", {},
             el("th", {}, "id"), el("th", {}, "type"), el("th", {}, "label"),
@@ -210,6 +234,26 @@ function jobsTab(main) {
 
   async function refreshJobs() {
     const jobs = await api("/jobs?limit=50");
+    // workflow rollup: group jobs by group_id; total = launched + remaining
+    // chain entries on the most recent job (the chain travels with it)
+    const groups = {};
+    for (const j of jobs) {
+      if (!j.group_id) continue;
+      if (!groups[j.group_id]) groups[j.group_id] = { label: j.group_label, jobs: [] };
+      groups[j.group_id].jobs.push(j);
+    }
+    wfStatus.replaceChildren(...Object.values(groups)
+      .filter(g => g.jobs.some(j => j.status === "running" || j.status === "queued"))
+      .map(g => {
+        const newest = g.jobs.reduce((a, b) => a.created_at > b.created_at ? a : b);
+        const total = g.jobs.length + (newest.chain ? newest.chain.length : 0);
+        const done = g.jobs.filter(j => j.status === "succeeded").length;
+        const failed = g.jobs.filter(j => j.status === "failed").length;
+        return el("div", {},
+          "⛓ ", el("code", {}, g.label), ` — ${done}/${total} done` +
+          (failed ? `, ${failed} failed` : "") + ` · now: ${newest.type} `,
+          el("span", { class: "chip " + newest.status }, newest.status));
+      }));
     jobTable.replaceChildren(...jobs.map(j => {
       const prog = j.progress && j.progress.mode === "fraction"
         ? el("div", {}, el("div", { class: "progress" },
@@ -219,7 +263,9 @@ function jobsTab(main) {
       return el("tr", { class: "clickable", onclick: () => openJobDetail(j.id) },
         el("td", {}, el("code", {}, j.id.slice(4, 24))),
         el("td", {}, j.type),
-        el("td", {}, j.label || ""),
+        el("td", {}, j.group_label
+          ? el("span", { class: "muted" }, "⛓" + j.group_label + " · ") : "",
+          j.label || ""),
         el("td", {}, el("span", { class: "chip " + j.status }, j.status)),
         el("td", {}, prog),
         el("td", { class: "muted" }, new Date(j.created_at * 1000).toLocaleString()));

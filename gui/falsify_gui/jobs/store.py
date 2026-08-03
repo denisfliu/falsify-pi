@@ -23,12 +23,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     out_dir TEXT,
     url TEXT,
     label TEXT,
-    chain TEXT
+    chain TEXT,
+    group_id TEXT,
+    group_label TEXT
 );
 """
 
 _COLS = ("id, type, kind, form_args, argv, status, pid, pid_starttime, "
-         "created_at, ended_at, exit_code, log_path, out_dir, url, label, chain")
+         "created_at, ended_at, exit_code, log_path, out_dir, url, label, "
+         "chain, group_id, group_label")
 
 
 class JobStore:
@@ -38,14 +41,15 @@ class JobStore:
         with self._lock:
             self._db.execute(_SCHEMA)
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(jobs)")}
-            if "chain" not in cols:   # migrate pre-chain databases
-                self._db.execute("ALTER TABLE jobs ADD COLUMN chain TEXT")
+            for col in ("chain", "group_id", "group_label"):
+                if col not in cols:   # migrate older databases
+                    self._db.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT")
             self._db.commit()
 
     def insert(self, job: Job) -> None:
         with self._lock:
             self._db.execute(
-                f"INSERT INTO jobs ({_COLS}) VALUES ({','.join('?' * 16)})",
+                f"INSERT INTO jobs ({_COLS}) VALUES ({','.join('?' * 18)})",
                 job.to_row())
             self._db.commit()
 

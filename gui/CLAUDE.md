@@ -73,6 +73,38 @@ One entry in `falsify_gui/jobs/definitions.py` — nothing else:
   parent's out_dir, remaining entries passed down. UI exposes one preset:
   succeeded `recovery_collect` → prefilled `render_recoveries` form.
 
+## Workflows (jobs/workflows.py) + conventions (conventions.py)
+
+Hardcoded presets (`eval_sweep`, `dagger_build`) expand a small form into a
+fully-concrete ordered list of job steps and submit it as one chained group
+through the GPU queue. Design rules:
+
+- **No DAG engine.** The GPU queue is serial, so every pipeline is an
+  ordered list. Fan-in is solved by computing all output paths at expand
+  time (`conventions.py`) — e.g. the sweep's grid step gets the explicit
+  campaign-dir list; the DAgger combine reads an index-prefixed staging dir.
+- **conventions.py is the single home for "we always do it this way"**:
+  out-dir naming (sweep cells per-policy like tools/run_eval_sweep.sh,
+  staging under data/atomic_datasets/_staging/), scene-stem config matching
+  (safety/<stem>.yaml, recovery/<stem>_mpc.yaml, prompt name == stem),
+  default frame/embodiment. Builders and presets must use it — never
+  re-derive paths inline.
+- Step semantics: `always: true` → the step launches even if its
+  predecessor *failed* (sweep cells are independent; the grid always
+  emits). Default halts on failure (DAgger build). A *killed* job always
+  halts its chain — kills are deliberate.
+- Late-binding values use chain substitution: `$out_dir` (parent's out
+  dir) and `$nparquets(<dir>)` (parquet count at launch time — how the
+  DAgger combine gets per-scene episode counts that aren't known until the
+  harvest finishes).
+- `submit_workflow` dry-builds every step at submit time so arg errors
+  surface immediately, not hours in. `POST /api/workflows {dry: true}`
+  returns the expansion without launching.
+- Single `eval_campaign` launches auto-prepend `generate_eval_bundles`
+  when the scenario's bundle is missing (routers/jobs.py).
+- Workflow jobs share `group_id`/`group_label`; the chain carries them to
+  children. The Jobs tab rolls groups up (x/N done, current step).
+
 ## Gotchas discovered the hard way
 
 - `rollout_states.npz` `failure_type` (and recovery `prompt`/`source`) are

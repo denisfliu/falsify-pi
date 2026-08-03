@@ -127,6 +127,23 @@ def _derive_out_dir(policy_config: Path, scene_key: str) -> Path:
     return root / f"run-{n:03d}-{ts}"
 
 
+def _card_gate_deltas(card: dict, scene_cfg: dict):
+    """Trial-card gate perturbation → the `_gate_deltas` dict the detector
+    factory uses to shift collision clouds / aperture corners (mirrors
+    falsify.orchestrator._extract_gate_deltas)."""
+    gp = card.get("gate_perturbation")
+    if gp is None:
+        return None
+    region = scene_cfg.get("gate_region") or {}
+    anchor = region.get("anchor")
+    return {
+        "delta_xyz_mocap": [float(v) for v in gp["delta_xyz"]],
+        "delta_yaw_rad": float(gp["delta_yaw_rad"]),
+        "anchor_mocap": ([float(v) for v in anchor]
+                         if anchor is not None else None),
+    }
+
+
 class _Tee:
     """Tee stdout/stderr to a sink file while preserving the primary
     stream, mirroring run_eval_campaign.py's _Tee."""
@@ -258,6 +275,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "Speeds up rollouts ~22× by querying the VLA once "
                          "per chunk; not byte-identical to a deployed RTC "
                          "checkpoint.")
+    ap.add_argument("--no-gripper-overlay", action="store_true",
+                    help="Strip the wrist-cam gripper overlay from this "
+                         "collection run, regardless of what the policy "
+                         "YAML declares. Ablation knob; resize + BGR swap "
+                         "still happen.")
     ap.add_argument("--execute-chunk-size", type=int, default=None,
                     help="Override the policy YAML's execute_chunk_size.")
     ap.add_argument("--out", type=Path, default=None,
@@ -483,6 +505,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             use_rtc_override=(False if args.no_rtc else None),
             record_dir=record_dir,
         )
+        if args.no_gripper_overlay:
+            pgcfg.gripper_overlay_paths = {}
         effective_hz = pgcfg.hz
         effective_chunk = 1 if pgcfg.use_rtc else pgcfg.execute_chunk_size
 
@@ -715,6 +739,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prompt=prompt_text,
                 source="recovery",
             )
+            # Same harvest guard as Phase 2 — never save a recovery whose
+            # flight violates the perturbation-aligned safety criteria.
+            from falsify.planning import validate_trajectory
+            vres = validate_trajectory(
+                traj_to_save, fg,
+                scene_cfg=scene_cfg, scene_dir=scene_dir,
+                safety_cfg=safety_cfg,
+                gate_deltas=_card_gate_deltas(card, scene_cfg),
+            )
+            if not vres.ok:
+                print(f"   [reject] trial_{trial_idx:03d}: recovery failed "
+                      f"validation — {vres.summary()}")
+                continue
             save_trajectory(recoveries_dir / f"recovery_{recovered:03d}.npz",
                             traj_to_save)
             # Also drop a copy inside the trial dir for context.
@@ -1073,6 +1110,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                     prompt=prompt_text,
                     source="recovery",
                 )
+
+                # Refuse to harvest a trajectory that violates the
+                # (perturbation-aligned) safety criteria — a recovery that
+                # clips the moved gate or the table would poison the
+                # training set. Collision clouds are shifted by this
+                # trial's gate deltas, exactly like the rollout detector's.
+                from falsify.planning import validate_trajectory
+                vres = validate_trajectory(
+                    traj_to_save, fg,
+                    scene_cfg=scene_cfg, scene_dir=scene_dir,
+                    safety_cfg=safety_cfg,
+                    gate_deltas=_card_gate_deltas(card, scene_cfg),
+                )
+                if not vres.ok:
+                    print(f"   [reject] trial_{trial_idx:03d}: recovery "
+                          f"failed validation — {vres.summary()}")
+                    (trial_dir / "recovery_rejected.json").write_text(
+                        json.dumps({
+                            "failure_step": vres.failure_step,
+                            "failure_type": vres.failure_type,
+                            "description": vres.description,
+                        }, indent=2))
+                    continue
+
                 save_trajectory(
                     recoveries_dir / f"recovery_{recovered:03d}.npz",
                     traj_to_save,
